@@ -1,0 +1,1744 @@
+\documentclass[conference]{IEEEtran}
+
+% T1 fontenc: gives Times (ptm) real small-caps coverage for the glyphs that
+% otherwise fall back to TS1 inside IEEEtran's small-caps table captions
+% (source of the "Font shape TS1/ptm/m/sc undefined" warning).
+\usepackage[T1]{fontenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{array}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc,shapes.geometric,shapes.misc}
+
+\begin{document}
+
+\title{Cluster-Routed Descriptor Learning with Structured Hard-Negative Mining for UAV Cross-View Localization}
+
+\author{
+\IEEEauthorblockN{Kim-Phuong Phung}
+\IEEEauthorblockA{
+% TODO: department/faculty name and email
+\textit{Le Quy Don Technical University}\\
+Hanoi, Vietnam\\
+email@example.com}
+\and
+\IEEEauthorblockN{Quang-Uy Nguyen}
+\IEEEauthorblockA{
+% TODO: department/faculty name and email
+\textit{Le Quy Don Technical University}\\
+Hanoi, Vietnam\\
+email@example.com}
+}
+
+\maketitle
+
+\begin{abstract}
+UAV visual localization requires retrieving the correct geographic position
+of an aerial query image from a large georeferenced satellite map. This paper
+presents a cluster-routed descriptor pipeline for scalable UAV
+cross-view localization. The system builds on pretrained transformer and ConvNeXt
+backbones whose raw, L2-normalized output embedding serves directly as the
+retrieval descriptor — used for descriptor matching, FAISS K-means routing,
+and candidate scoring alike, with no projection, clustering, or routing head;
+the descriptor is adapted by fine-tuning the last backbone stages. The same
+cluster structure that routes queries at evaluation time also organizes
+training: hard negatives are mined from a query's own cluster and its nearest
+clusters, with co-positive exclusion preventing false negatives, so the
+contrastive signal concentrates on the visually repetitive candidates where
+retrieval errors actually occur. The loss combines paired in-batch InfoNCE,
+descriptor variance regularization, same-cluster hard-negative suppression,
+and soft cluster consistency. During
+evaluation, the Game4Loc pre-tiled satellite gallery (256-pixel tiles at
+multiple zoom levels) is clustered in the retrieval embedding space
+and searched through nearest-cluster candidate selection, with an optional
+vector-quantized semantic re-ranking of the top candidates. The pipeline
+includes checkpointed
+centroids, cached query and tile embeddings, cluster visualization, and
+query-level inspection for reproducible training and evaluation.
+\end{abstract}
+
+\begin{IEEEkeywords}
+UAV localization, cross-view retrieval, visual place recognition, metric
+learning, FAISS, Swin Transformer, clustering.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Unmanned aerial vehicle (UAV) localization from imagery is a fundamental
+capability for autonomous navigation, inspection, search, and mapping.
+Operational systems must infer the position of a UAV image by matching it
+against a geographically referenced satellite or orthomosaic map. This is
+commonly formulated as cross-view retrieval and metric learning: the query image is
+captured from an aerial perspective, while the database imagery is a set of
+top-down map crops. The goal is to learn an embedding in which geographically
+corresponding views are close and unrelated map locations are far apart, as in
+deep metric-learning systems based on contrastive, triplet, and
+classification-style objectives \cite{hadsell2006dimensionality,schroff2015facenet,sohn2016improved}.
+
+This task remains challenging due to the substantial appearance gap between
+UAV and satellite views, the large number of candidate map locations, and the
+presence of many visually repetitive regions. A flat descriptor can support fast
+global retrieval but may not provide sufficient local discrimination inside
+visually similar areas. A fully specialized descriptor, however, is difficult
+to apply efficiently over a large map.
+
+Recent work has shown that transformer backbones are effective for UAV and
+cross-view localization because self-attention can aggregate long-range layout
+cues across roads, buildings, fields, and water boundaries. However, the
+retrieval errors that remain are concentrated among visually repetitive
+candidates: nearby tiles sharing similar road grids, rooftops, vegetation, or
+water boundaries that a flat in-batch contrastive objective rarely contrasts
+against one another. Randomly drawn or in-batch negatives are overwhelmingly
+easy, so the descriptor receives little gradient signal exactly where
+discrimination matters most — inside the neighborhoods of look-alike
+locations.
+
+The proposed approach formulates localization as learned routing followed by
+candidate scoring in the same embedding space. The backbone's L2-normalized
+output embedding is trained — by unfreezing its last stages — to place
+corresponding anchor-positive crops into the
+same K-means cluster \cite{macqueen1967methods}. At evaluation time, this
+descriptor first routes a query to nearby map clusters and then scores
+candidate tiles with the same descriptor. The central training mechanism is
+that the same cluster structure also organizes hard-negative mining: negatives
+are drawn from a query's own cluster and its nearest clusters, ranked by
+descriptor similarity, with co-positive exclusion preventing samples that
+share a positive tile from being pushed apart as false negatives. The
+contrastive signal therefore concentrates on exactly the look-alike
+neighborhoods where retrieval fails. This design keeps map-side computation
+cacheable and avoids training separate routing and scoring heads.
+
+The contributions are:
+\begin{itemize}
+    \item Cluster-structured hard-negative mining: the K-means partition
+    learned for routing doubles as the negative-sampling structure — hard
+    negatives come from a query's own cluster and its nearest clusters,
+    ranked by descriptor similarity, with co-positive exclusion to prevent
+    false negatives — focusing the contrastive objective on visually
+    repetitive look-alike regions.
+    \item A FAISS-based clustered coarse-to-fine search strategy for fast
+    large-map localization, where Game4Loc pre-tiled gallery images are
+    embedded, clustered, and searched through nearest-cluster candidate
+    selection before descriptor scoring, with an optional vector-quantized
+    semantic re-ranking stage for top-candidate ordering.
+    \item A full training and evaluation pipeline for comparing backbones,
+    scoring modes, clustering settings, and reference approaches, with cached
+    map/query embeddings, checkpointed centroids, evaluation
+    history, and query-level inspection.
+\end{itemize}
+
+\section{Related Work}
+\subsection{UAV Absolute Visual Localization}
+Recent UAV absolute localization research is motivated by the limitations of
+navigation systems that depend on external signals or local motion integration:
+GNSS may be unreliable or unavailable, while local odometry and SLAM
+accumulate drift and do not directly recover global latitude-longitude
+coordinates. A common alternative is image-based absolute localization, where
+a UAV image is matched against a georeferenced satellite, orthomosaic, vector,
+or 3D reference map \cite{liu2024review}. In contrast to relative visual
+odometry, these methods aim to produce a global position estimate by anchoring
+the observation to an external map.
+
+Within the last three years, many learning-based UAV absolute localization
+methods have adopted a retrieval-and-refinement paradigm. GLVL introduced a
+global-local design in which a large-scale retrieval module first identifies a
+similar map region and a fine-grained matching module then estimates a more
+precise UAV coordinate \cite{li2023glvl}. This formulation is related to the
+coarse-to-fine structure considered in this paper and is representative of
+recent work that combines large-scale region retrieval with fine-grained local
+matching.
+
+DenseUAV focused on low-altitude urban self-positioning and emphasized the
+importance of dense satellite sampling and localization-aware evaluation for
+UAV-to-satellite matching \cite{dai2024denseuav}. Its benchmark and baseline
+are useful for evaluating drone-satellite retrieval under urban appearance
+changes, altitude variation, and dense candidate galleries. DenseUAV also
+reports both retrieval and distance-sensitive evaluation, making it an
+important reference point for UAV localization accuracy.
+
+Scale-aware UAV-to-satellite localization has recently been studied by
+Ye et al., who estimate absolute query scale from semantic anchors such as
+small vehicles and use the recovered metric scale to adapt satellite crop size
+before retrieval \cite{ye2026scaleaware}, evaluating robustness on augmented
+DenseUAV and UAV-VisLoc settings. Such explicit scale recovery depends on
+reference objects being visible and correctly detected, which scenes dominated
+by fields, water, or vegetation may not satisfy; the present work instead
+relies on the retrieval descriptor itself, trained with structured hard
+negatives, to separate visually similar candidates.
+
+Recent alternatives also explore visual-inertial absolute positioning
+\cite{tong2025rtapm}, vector-map localization \cite{hao2025vecmaploc}, and
+multi-view visual indexing from rendered references \cite{li2025viewpoint}.
+These approaches broaden the absolute-localization setting beyond pure
+satellite-image retrieval, although they typically require additional sensor
+streams, map modalities, or reference rendering pipelines.
+
+\subsection{Vision Transformers for Image Retrieval}
+Vision Transformer (ViT) models replaced fixed convolutional receptive fields
+with self-attention over image patches, allowing descriptors to aggregate
+long-range spatial context directly from token interactions
+\cite{dosovitskiy2021vit}. This property is attractive for image retrieval,
+where two images may share large-scale layout while differing in viewpoint,
+scale, illumination, or local appearance. Early transformer retrieval studies
+showed that ViT backbones can be optimized with metric-learning objectives and
+entropy regularization to produce compact global descriptors for instance-level
+image retrieval \cite{el2021vitretrieval}. Compared with CNN descriptors,
+transformer descriptors can represent relationships between distant structures,
+which is useful for aerial scenes containing roads, field boundaries, rooftops,
+and shoreline patterns.
+
+Self-supervised transformer pretraining further strengthened the use of ViT
+features for retrieval. DINO showed that self-supervised ViTs learn features
+with strong semantic organization and attention maps that often localize
+salient regions without explicit segmentation supervision
+\cite{caron2021dino}. DINOv2 extended this direction by training robust
+general-purpose visual features that transfer across image distributions and
+tasks without task-specific labels \cite{oquab2023dinov2}. In visual place
+recognition, AnyLoc demonstrated that foundation-model features, particularly
+DINO and DINOv2 descriptors aggregated with VLAD, can generalize across
+viewpoints, domains, and environments without dataset-specific fine-tuning
+\cite{keetha2023anyloc}. These results motivate using a strong pretrained
+transformer backbone as a stable feature extractor, while adapting lightweight
+heads for the target UAV localization objective.
+
+Transformer models have also been applied directly to cross-view
+geo-localization. EgoTR introduced an evolving transformer formulation to model
+global dependencies between street-view and aerial imagery
+\cite{zhu2021egotr}. TransGeo later argued that a transformer-only
+architecture can replace several handcrafted cross-view alignment operations
+by using attention to emphasize discriminative regions and suppress invalid
+patches \cite{zhu2022transgeo}. These methods illustrate why transformer
+attention is relevant to cross-view retrieval: the model can compare image
+regions through global context rather than relying only on local convolutional
+patterns.
+
+\subsection{Drone-Satellite Localization Challenges}
+Drone-satellite localization is harder than standard image retrieval because
+the query and reference images differ in viewpoint, altitude, scale, sensor
+characteristics, illumination, and seasonal appearance. A UAV image may contain
+oblique structures, motion blur, partial fields of view, or heading changes,
+whereas the satellite reference is usually a top-down georeferenced raster.
+These differences create a substantial domain gap, so a descriptor must remain
+stable under geometric and photometric changes while still preserving enough
+local detail to distinguish nearby map regions.
+
+Large-map search further complicates the problem. Operational localization
+does not usually provide a small closed-set gallery; instead, the system must
+search many overlapping satellite crops extracted from a continuous map. This
+creates severe class imbalance and many visually repetitive candidates, such as
+roads, rooftops, fields, rivers, and industrial areas. The correct UAV footprint
+may also overlap multiple reference tiles, making one-to-one retrieval labels an
+imperfect training and evaluation target \cite{xu2024uavvisloc,li2025onetomany}.
+These challenges motivate coarse-to-fine or clustered search designs that first
+reduce the candidate set and then apply a more discriminative local retrieval
+stage.
+
+\subsection{Drone-Satellite Retrieval Benchmarks}
+Drone-satellite retrieval benchmarks have shaped most current UAV
+self-localization methods. SUES-200 introduced multi-height drone-satellite
+matching with UAV images collected at four flight heights and corresponding
+satellite views, highlighting altitude variation as a central challenge
+\cite{zhu2023sues}. DenseUAV further moved the task toward low-altitude
+self-positioning in urban environments \cite{dai2024denseuav}. ComplexUAV
+extends the benchmark setting to high-altitude, dense, multi-terrain sampling
+and evaluates contrastive learning, backbone choices, SAFA attention, and
+generalization across multiple datasets \cite{chen2025complexuav}. These
+benchmarks are usually formulated as retrieving a correct satellite tile or
+class label from a prepared gallery.
+
+Game4Loc introduced GTA-UAV, a game-engine UAV geo-localization benchmark
+covering a continuous $81.3\,\mathrm{km}^2$ area with 33,763 drone images and
+14,640 satellite tiles sampled at four zoom levels \cite{ji2024game4loc}. It
+is particularly relevant to this work because it removes the strict
+one-to-one pairing assumption and evaluates arbitrary drone--satellite pairs
+through partial overlap, distance-sensitive metrics, and same-area/cross-area
+training splits. Its satellite gallery can be viewed as a hierarchical tiling
+reference: the same broad area is represented at several map zoom levels, so
+retrieval must handle both scale changes and partial map overlap.
+
+\begin{table*}[t]
+\caption{Comparison of drone-satellite localization benchmarks.}
+\label{tab:drone_satellite_benchmarks}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.15\textwidth}
+                >{\raggedright\arraybackslash}p{0.25\textwidth}
+                >{\raggedright\arraybackslash}p{0.30\textwidth}
+                >{\raggedright\arraybackslash}p{0.22\textwidth}@{}}
+\toprule
+Dataset & Reference setting & Main variation & Task form \\
+\midrule
+SUES-200 \cite{zhu2023sues} &
+Paired drone and satellite views &
+Multiple UAV flight heights &
+Closed-gallery retrieval \\
+DenseUAV \cite{dai2024denseuav} &
+Dense urban satellite sampling &
+Low-altitude urban viewpoint and appearance changes &
+Dense tile retrieval and localization-aware evaluation \\
+ComplexUAV \cite{chen2025complexuav} &
+High-altitude, dense, multi-terrain sampling &
+Terrain diversity, backbone choice, and cross-dataset generalization &
+Benchmark retrieval across multiple datasets \\
+UAV-VisLoc \cite{xu2024uavvisloc} &
+Large satellite maps with UAV queries &
+Diverse locations, platforms, altitudes, headings, and terrains &
+Coordinate localization on georeferenced maps \\
+Trim-UAV-\newline VisLoc \cite{li2025onetomany} &
+Trimmed map tiles derived from UAV-VisLoc &
+One-to-many imperfect overlap between query and references &
+Overlap-aware retrieval with IoU information \\
+GTA-UAV / \newline Game4Loc \cite{ji2024game4loc} &
+Continuous synthetic map with four satellite zoom levels &
+Altitude, attitude, scene, scale, and partial-overlap variation &
+Weighted partial-match retrieval and localization in meters \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+This work mainly follows UAV-VisLoc and Trim-UAV-VisLoc because their problem
+setting is closest to the intended operating condition of the proposed system.
+UAV-VisLoc formulates UAV visual localization as finding real UAV coordinates
+on a large satellite map rather than retrieving only a pre-cropped one-to-one
+reference tile \cite{xu2024uavvisloc}. It provides 6,742 drone images and 11
+satellite maps from diverse locations, terrains, UAV platforms, altitudes, and
+headings. This makes it suitable for evaluating a pipeline that tiles a
+GeoTIFF map, caches map descriptors, searches nearest map regions, and reports
+geometric localization error rather than only closed-gallery classification
+accuracy.
+
+Trim-UAV-VisLoc is also central to this work because it exposes a practical
+property of large-map localization: one UAV query may overlap several valid
+reference crops, and the best tile is not always a single manually defined
+class label. The dataset constructs a one-to-many imperfect matching setting
+from UAV-VisLoc, adds IoU information, and introduces an Incomp-NPair loss to
+better model overlapping references \cite{li2025onetomany}. This motivates the
+adopted evaluation design: the satellite map is tiled into overlapping crops,
+candidate retrieval is restricted by learned clusters, and a prediction is
+judged by the Game4Loc IoU criterion (IoU $\geq 0.39$) instead of by a
+strict one-to-one class label.
+
+\subsection{Game4Loc Reference Protocol}
+Game4Loc is used in this paper as a reference protocol for hierarchical
+tiling, partial-match training, and area-split evaluation
+\cite{ji2024game4loc}. Its GTA-UAV gallery contains satellite tiles from four
+map zoom levels, which creates a multi-scale reference hierarchy. Rather than
+assuming that each drone query corresponds to exactly one satellite tile, the
+metadata lists positive and semi-positive satellite candidates for each drone
+image. The official training condition uses metadata files such as
+\texttt{same-area-drone2sate-train.json} or
+\texttt{cross-area-drone2sate-train.json}; the default training mode
+\texttt{pos\_semipos} samples from \texttt{pair\_pos\_sate\_img\_list} and
+\texttt{pair\_pos\_semipos\_sate\_img\_list} with corresponding
+overlap-derived positive weights.
+
+The Game4Loc objective is a bidirectional weighted InfoNCE. Let
+$\mathbf{u}_i$ and $\mathbf{v}_i$ be normalized drone and satellite
+descriptors and let $\alpha_i$ denote the partial-match weight. Its
+implementation converts this weight into a smoothing factor
+$\epsilon_i=1-(1+\exp(-k\alpha_i))^{-1}$ and optimizes a mixture of a hard
+diagonal contrastive target and a softened target:
+\begin{equation}
+\begin{split}
+\mathcal{L}_{G4L} =
+\frac{1}{2}\big[
+&\mathcal{L}_w(\mathbf{U}\mathbf{V}^{T})+
+\mathcal{L}_w(\mathbf{V}\mathbf{U}^{T})\big],\\
+\mathcal{L}_w(\mathbf{S}) =
+\frac{1}{B}\sum_i
+&\left[
+(1-\epsilon_i)\left(-S_{ii}+\log\sum_j e^{S_{ij}}\right)\right.\\
+&\left.+\epsilon_i\left(-\frac{1}{B}\sum_j S_{ij}+
+\log\sum_j e^{S_{ij}}\right)
+\right].
+\end{split}
+\end{equation}
+The same-area condition trains and tests on held-out samples from the same
+geographic area, while the cross-area condition trains and tests on different
+map regions. Evaluation is performed primarily in drone-to-satellite (D2S)
+mode and reports Recall@K, average precision, spatial distance metric
+(SDM@K), and mean distance error Dis@K. In the official evaluator, same-area
+distance-threshold curves use 4 m increments up to 200 m, while cross-area
+curves use 10 m increments up to 500 m.
+
+\subsection{Metric Learning and Hard Negatives for Cross-View Localization}
+Recent cross-view geo-localization methods increasingly rely on contrastive
+metric learning rather than classification-only training. Sample4Geo demonstrated
+that symmetric InfoNCE with hard negative sampling provides a strong
+alternative to more complex aggregation and preprocessing pipelines
+\cite{deuser2023sample4geo}. It shows that carefully designed sampling and
+contrastive optimization can provide strong cross-view retrieval performance
+without relying on complex preprocessing or aggregation modules.
+
+ComplexUAV also reports strong performance from an InfoNCE-based contrastive
+framework with dynamic distance sampling \cite{chen2025complexuav}. The
+one-to-many UAV-VisLoc follow-up modifies the N-pair objective to handle
+imperfect overlapping matches \cite{li2025onetomany}. These studies indicate
+that hard-negative mining, multi-positive supervision, and overlap-aware
+objectives are important for cross-view UAV localization.
+
+\subsection{Coarse-to-Fine Retrieval and Clustered Search}
+Large-map localization is often too expensive to solve by exhaustive
+fine-grained matching over every possible crop. Coarse-to-fine retrieval
+therefore remains a common design pattern: a global representation narrows the
+candidate set, and a more discriminative stage performs local ranking or
+geometric refinement. Global-local UAV localization systems instantiate this
+pattern with explicit refinement modules \cite{li2023glvl}, while dense-tile
+benchmarks increase spatial recall by sampling many overlapping satellite
+crops \cite{dai2024denseuav}. Approximate nearest-neighbor systems and FAISS
+K-means provide a complementary route by organizing descriptors into searchable
+partitions before fine ranking \cite{johnson2019billion}. These clustered
+search strategies are particularly relevant when the reference map contains
+many overlapping candidate tiles.
+
+\section{Baseline Methods}
+The proposed pipeline builds on three baseline method families commonly used
+in visual
+localization and image retrieval: Swin Transformer visual features,
+FAISS K-means clustering, and
+metric-learning losses. These baselines provide the feature extractor,
+routing mechanism, and descriptor-learning objective used by the
+proposed pipeline.
+
+\subsection{Swin Transformer Backbone}
+Swin Transformer introduces shifted-window self-attention, enabling local
+attention computation while still exchanging information across windows
+\cite{liu2021swin}. This property is well suited to map and UAV imagery, in which a
+descriptor must preserve local texture cues such as roads, roofs, fields, and
+shorelines while also encoding larger spatial layout. In the implemented
+system, Swin-B is the primary backbone and ConvNeXt-T is supported as a
+smaller alternative. The backbone is ImageNet-pretrained; its last stages
+are unfrozen for fine-tuning, which is the only trainable retrieval
+component since the raw normalized backbone output serves directly as the
+descriptor. Keeping the earlier stages fixed reduces GPU memory use and
+limits overfitting to satellite crop pairs.
+
+\subsection{FAISS K-Means Routing}
+K-means is employed as a routing mechanism rather than as a flat retrieval
+method. The normalized backbone output is a unit descriptor, and FAISS provides an
+efficient implementation of K-means and nearest-centroid search for large
+embedding sets \cite{johnson2019billion}. This design is appropriate for large
+GeoTIFF maps, as the map can be partitioned into candidate groups before
+candidate scoring. The cluster assignments also create structured
+hard-negative pools: samples from the same cluster are visually close and
+thus informative for descriptor training. Persisting centroids further
+stabilizes checkpoint resumption and cluster-consistency losses.
+
+\subsection{Metric Learning}
+The localization objective is naturally metric-based: matching crops are
+expected to have high cosine similarity, whereas non-matching crops should
+have lower similarity. The training objective therefore follows metric-learning
+practice. Paired in-batch InfoNCE aligns anchor-positive descriptors, a
+variance term prevents collapse, a same-cluster hard-negative margin suppresses
+confusing alternatives, and a soft cluster-consistency loss encourages paired
+crops to share K-means assignments. This follows the same principle as
+contrastive and triplet metric learning
+\cite{hadsell2006dimensionality,schroff2015facenet} while adapting the loss to
+clustered routing over a large map.
+
+\section{Problem Formulation}
+Let $\mathcal{Q}=\{q_i\}$ be a set of UAV query images and
+$\mathcal{M}=\{m_j\}_{j=1}^{N}$ be a set of map tiles extracted from a
+georeferenced satellite image. For each query $q_i$, the objective is to
+retrieve a ranked list of map tiles such that at least one tile overlaps the
+ground-truth UAV location. The evaluation uses latitude and longitude
+metadata from a sequence CSV file and transforms these coordinates to the map
+coordinate reference system when required.
+
+Instead of matching every query against all map tiles in a single flat search,
+the proposed system first partitions map tiles into clusters in a learned
+embedding space. A query searches one or more nearest clusters, and final
+ranking is performed only over the candidate tiles in those clusters.
+
+\section{Training Data}
+\label{sec:training_data}
+The system is trained with a cross-view drone-to-satellite (D2S) supervision
+signal. Two complementary datasets are used.
+
+\paragraph{UAV-VisLoc with Game4Loc-style pairing.}
+The primary training source is the UAV-VisLoc dataset \cite{xu2024uavvisloc},
+processed using the Game4Loc tiling protocol \cite{ji2024game4loc}.
+A pre-tiled satellite pyramid at four zoom levels serves as the gallery.
+For each drone image, positive tiles are identified by geographic overlap:
+a tile qualifies as a strong positive when its intersection-over-union (IoU)
+with the drone footprint is $\geq 0.39$, and as a semi-positive when IoU
+$\geq 0.14$. Semi-positives enter training with their IoU value as a
+continuous weight for the weighted InfoNCE loss, providing a softer supervision
+signal for partially overlapping views.
+Training pairs are stored in a Game4Loc-format JSON file and loaded
+with the \texttt{pos\_semipos} mode. The footprint for each drone image is
+computed from altitude and heading metadata in the accompanying CSV files,
+using a camera model with $\text{FOV}_H = 36^\circ$ and
+$\text{FOV}_V = 52^\circ$.
+This setup provides real D2S training signal
+over diverse terrain with authentic sensor appearance differences.
+
+\paragraph{University-1652.}
+The University-1652 dataset \cite{zheng2020university1652} provides a
+controlled building geo-localization benchmark with 701 training locations
+across a university campus. Each location is represented by approximately
+54 drone images taken from multiple viewpoints and altitudes, paired with a
+single overhead satellite image. All drone images from the same location share
+the satellite image as their positive, yielding approximately 37\,800
+training pairs. University-1652 complements VisLoc training with diverse
+viewpoints, multi-building urban scenes, and a fixed overhead satellite
+perspective, improving robustness to altitude variation.
+
+\paragraph{Training transform.}
+All training images are resized to the backbone input size
+($224\times224$ for Swin-T, $384\times384$ for Swin-B).
+Augmentation includes color jitter, Gaussian blur or sharpening,
+random cardinal rotation, JPEG compression simulation, and coarse dropout.
+Random resized cropping is omitted to avoid removing overlapping content
+that would corrupt the paired supervision signal.
+Cluster-stat extraction at the start of each epoch uses a deterministic
+transform: resize only, no augmentation.
+
+\section{Method}
+The proposed methodology is designed around the observation that UAV
+localization over a large GeoTIFF map requires both scalable search and
+fine-grained discrimination. A single global descriptor is efficient, but it
+must separate many visually repetitive map regions in one embedding space. A
+fully specialized local descriptor can improve discrimination, but applying it
+over every map tile is computationally inefficient and difficult to cache. The
+proposed architecture therefore uses a single retrieval descriptor — the
+backbone's raw L2-normalized output embedding, adapted by fine-tuning the
+last backbone stages — as both
+the routing descriptor and the candidate-scoring descriptor. Training shapes
+this embedding space to group visually and geographically
+related crops, while evaluation uses nearest-cluster routing to reduce the
+candidate set before scoring. This design adds no head parameters and keeps
+all map embeddings cacheable.
+
+\subsection{Backbone}
+The visual encoder uses a pretrained backbone from \texttt{timm}
+with the classification layer removed. The primary configuration is Swin-B at
+$384\times384$ \cite{liu2021swin}; a ConvNeXt-T variant at the same input
+resolution is supported for a $3\times$ smaller model with the identical
+methodology. The backbone outputs
+\begin{equation}
+    \mathbf{h}=f_b(\mathbf{x})\in\mathbb{R}^{D},
+\end{equation}
+where $D=1024$ for Swin-B and $D=768$ for ConvNeXt-T. The backbone is
+initialized with ImageNet-pretrained weights; the last backbone stages are
+unfrozen for fine-tuning, which is the only mechanism by which the descriptor
+is adapted.
+
+\subsection{Retrieval Descriptor}
+The retrieval descriptor is the backbone's own globally pooled output,
+L2-normalized:
+\begin{equation}
+    \mathbf{c}(\mathbf{x}) =
+    \mathrm{norm}\left(\mathbf{h}\right)\in\mathbb{R}^{D}.
+\end{equation}
+No projection head is used: the raw normalized backbone embedding serves
+descriptor matching, K-means cluster assignment, cluster-consistency
+training, and hard-negative mining alike, matching the head-free design used
+by strong contrastive baselines \cite{deuser2023sample4geo,ji2024game4loc}.
+Keeping the descriptor identical to the backbone output avoids an extra
+projection whose benefit did not materialize in practice, and makes cached
+gallery embeddings directly comparable across training stages. The number of
+clusters is denoted by $K$ and is configurable in the implementation; the
+default experimental setting uses $K=8$--$16$.
+
+\subsection{Cluster-Structured Hard-Negative Mining}
+\label{sec:hard_mining}
+The K-means partition maintained for routing doubles as the training-time
+negative-sampling structure. For each anchor, hard negatives are drawn
+primarily from the anchor's own cluster — samples the current descriptor
+already considers similar — and secondarily from the nearest neighboring
+clusters, ranked by cosine similarity in the cached descriptor bank. A
+remaining fraction is sampled globally at random to preserve coverage.
+
+Two safeguards keep this mining signal clean. First, \emph{co-positive
+exclusion}: any candidate that shares a positive satellite tile with the
+anchor (including candidates linked through overlapping positives) is removed
+from the negative pool, since pushing apart two views of the same place would
+directly oppose the alignment objective. Second, the mining hardness is
+scheduled: the negative loss is warmed up over the first training steps so
+that early, unstable descriptors are not dominated by noisy hard negatives.
+Because cluster assignments are refreshed from the current descriptor at each
+rebuild, the mining pool tracks the model: as look-alike regions get pulled
+apart, the clusters — and therefore the negatives — re-focus on whatever
+confusions remain. Figure~\ref{fig:mining_comparison} contrasts this
+cluster-structured sampling with the standard in-batch InfoNCE negative set.
+
+\begin{figure*}[htbp]
+\centering
+\tikzset{
+  negopen/.style = {circle, draw=red!70!black, thick, inner sep=1.6pt},
+  negfill/.style = {circle, fill=red!70!black, inner sep=1.6pt},
+  posdot/.style  = {circle, fill=green!55!black, inner sep=1.8pt},
+  anchdot/.style = {star, star points=5, star point ratio=2.4, fill=black,
+                    inner sep=1.5pt},
+  graydot/.style = {circle, fill=black!30, inner sep=1.4pt},
+  cent/.style    = {cross out, draw=blue!60!black, thick, inner sep=1.8pt},
+  panel/.style   = {rounded corners=4pt, draw=black!60, thick},
+  note/.style    = {font=\scriptsize, align=center},
+}
+\resizebox{0.92\textwidth}{!}{%
+\begin{tikzpicture}
+
+%% ── Panel (a): standard in-batch InfoNCE ────────────────────────────────
+\begin{scope}
+\draw[panel] (0,0) rectangle (7,5);
+\node[font=\footnotesize\bfseries, anchor=south west] at (0.05,5.05)
+  {(a) Standard in-batch InfoNCE negatives};
+
+% anchor + positive
+\node[anchdot] (a1) at (2.2,2.6) {};
+\node[posdot]  at (2.55,2.95) {};
+
+% hard region around the anchor: almost never sampled
+\draw[dashed, black!50] (2.2,2.6) circle (0.85);
+\node[note, black!60] at (2.2,1.35) {look-alike neighborhood:\\rarely sampled};
+
+% random batch negatives, spread over the whole space (easy)
+\foreach \p in {(5.9,4.3),(6.2,1.2),(4.8,0.7),(5.4,3.1),(6.5,2.5),
+                (4.3,4.5),(3.9,1.0),(1.0,4.4),(0.8,0.9)}
+  \node[negopen] at \p {};
+
+\node[note] at (4.9,4.85) {negatives $=$ other batch items,\\drawn
+  uniformly over the dataset};
+\node[note, red!60!black] at (5.6,0.35)
+  {distant $\Rightarrow$ easy $\Rightarrow$ vanishing gradient};
+\end{scope}
+
+%% ── Panel (b): cluster-structured mining ────────────────────────────────
+\begin{scope}[shift={(8.6,0)}]
+\draw[panel] (0,0) rectangle (7,5);
+\node[font=\footnotesize\bfseries, anchor=south west] at (0.05,5.05)
+  {(b) Cluster-structured mining (ours)};
+
+% K-means cell boundaries (dashed) and centroids
+\draw[dashed, black!45] (3.45,0) .. controls (3.2,1.8) and (3.6,3.4) .. (3.3,5);
+\draw[dashed, black!45] (3.4,2.15) .. controls (4.8,2.3) and (5.8,2.0) .. (7,2.3);
+\node[cent] at (1.9,2.7) {};
+\node[cent] at (5.2,3.7) {};
+\node[cent] at (5.3,1.0) {};
+\node[note, black!55] at (0.85,4.72) {anchor's\\cluster};
+\node[note, black!55] at (6.15,4.72) {nearest\\cluster};
+\node[note, black!55] at (6.3,1.9) {other\\clusters};
+
+% anchor + positive
+\node[anchdot] at (2.0,2.4) {};
+\node[posdot]  at (2.35,2.75) {};
+
+% 50% same-cluster hard negatives, ranked by similarity (close to anchor)
+\foreach \p in {(1.45,2.0),(2.65,1.85),(1.6,3.25),(2.85,2.95)}
+  \node[negfill] at \p {};
+\node[note, red!60!black] at (1.75,1.15) {50\,\% same cluster\\(hardest by
+  similarity)};
+
+% 30% nearest-cluster negatives
+\foreach \p in {(4.35,3.4),(5.0,4.25),(4.7,2.75)}
+  \node[negfill] at \p {};
+\node[note, red!60!black] at (4.75,4.75) {30\,\% nearest\\cluster};
+
+% 20% random global
+\node[negfill] at (6.3,0.65) {};
+\node[note, red!60!black] at (5.45,0.4) {20\,\% random};
+
+% co-positive exclusion
+\node[graydot] (cp) at (2.5,2.15) {};
+\draw[red!70!black, thick] (2.36,2.01) -- (2.64,2.29);
+\draw[red!70!black, thick] (2.36,2.29) -- (2.64,2.01);
+\node[note, black!60, anchor=west] at (3.0,1.45)
+  {co-positive: shares the anchor's\\positive tile $\to$ excluded};
+\draw[-Stealth, black!50] (3.05,1.6) -- (2.62,2.05);
+\end{scope}
+
+%% ── Shared legend ────────────────────────────────────────────────────────
+\begin{scope}[shift={(1.2,-0.75)}]
+\node[anchdot]  at (0,0) {};   \node[note, anchor=west] at (0.15,0) {anchor};
+\node[posdot]   at (2.0,0) {}; \node[note, anchor=west] at (2.15,0) {positive};
+\node[negopen]  at (4.2,0) {}; \node[note, anchor=west] at (4.35,0) {in-batch negative};
+\node[negfill]  at (7.3,0) {}; \node[note, anchor=west] at (7.45,0) {mined negative};
+\node[cent]     at (10.2,0) {};\node[note, anchor=west] at (10.35,0) {K-means centroid};
+\draw[dashed, black!45] (12.9,-0.05) -- (13.5,-0.05);
+\node[note, anchor=west] at (13.6,0) {cluster boundary};
+\end{scope}
+
+\end{tikzpicture}%
+}
+\caption{Standard in-batch InfoNCE negatives versus the proposed
+cluster-structured hard-negative mining, drawn in the retrieval embedding
+space. \textbf{(a)}~With in-batch InfoNCE, the negative set is whatever else
+happens to be in the batch — a uniform draw over the dataset. Most samples
+land far from the anchor, where the contrastive gradient is already
+vanishing, while the anchor's look-alike neighborhood (dashed) is almost
+never sampled. \textbf{(b)}~Our mining uses the K-means partition maintained
+for routing: 50\,\% of negatives come from the anchor's own cluster ranked by
+descriptor similarity (the hardest confusers), 30\,\% from the nearest
+neighboring cluster, and 20\,\% globally at random for coverage
+(Section~\ref{sec:hard_mining}). Candidates sharing a positive tile with the
+anchor (co-positives) are excluded so that two views of the same place are
+never pushed apart. Because clusters are rebuilt from the current descriptor,
+the sampling distribution re-focuses on whatever confusions remain as
+training progresses.}
+\label{fig:mining_comparison}
+\end{figure*}
+
+\subsection{Cluster Routing and Candidate Scoring}
+Given L2-normalized K-means centroids
+$\mathbf{C}=\{\mathbf{c}_1,\ldots,\mathbf{c}_{K}\}$, the routing score for an
+image is computed as cosine similarity between its retrieval descriptor and all
+centroids:
+\begin{equation}
+    \mathbf{s}(\mathbf{x}) =
+    \mathbf{c}(\mathbf{x})\mathbf{C}^{T}\in\mathbb{R}^{K}.
+\end{equation}
+At evaluation time, these scores select the nearest map clusters. Candidate
+tiles inside those clusters are scored with the same retrieval
+descriptor and the selected scoring mode, such as cosine, centered cosine,
+cluster-centered cosine, or cluster-Mahalanobis scoring.
+
+\begin{figure*}[htbp]
+\centering
+\tikzset{
+  block/.style = {draw, rounded corners=2pt, align=center, font=\small,
+                  minimum width=3.6cm, minimum height=0.62cm},
+  arr/.style   = {-Stealth, semithick},
+  vqarr/.style = {-Stealth, semithick, teal!70!black},
+}
+% semantic-map cell colors (schematic: vegetation/road/building/water/roof)
+\colorlet{cG}{green!55!black!55}
+\colorlet{cR}{black!35}
+\colorlet{cB}{orange!75}
+\colorlet{cW}{cyan!60!blue!55}
+\colorlet{cO}{red!65}
+% \semmap{x}{y}{cell size}{rows}: 6x6 colored ID map, top-left at (x,y)
+\def\semmap#1#2#3#4{%
+  \begin{scope}[shift={(#1,#2)}]
+    \foreach \row [count=\yi from 0] in {#4} {
+      \foreach \c [count=\xi from 0] in \row {
+        \path[fill=\c, draw=white, line width=0.25pt]
+          ({\xi*#3}, {-\yi*#3-#3}) rectangle ++(#3,#3);
+      }}
+    \draw[black!60, line width=0.4pt] (0, {-6*#3}) rectangle ({6*#3}, 0);
+  \end{scope}}
+\resizebox{0.82\textwidth}{!}{%
+\begin{tikzpicture}
+
+%% ─── Backbone (left column) ──────────────────────────────────────────────
+
+\node[block, fill=gray!12]                       (inp)  {Input $[B,3,384,384]$};
+\node[block, fill=teal!10,   below=3mm of inp]   (emb)  {Patch Embed ($4{\times}4$, stride~4)};
+\node[font=\scriptsize,gray, right=2mm of emb]   {$[B,96^2,C{=}128]$};
+
+\node[block, fill=cyan!8,    below=6mm of emb]   (s0)   {Stage~0 \quad $\times$2 blocks};
+\node[font=\scriptsize,gray, right=2mm of s0]    {$96{\times}96,\ C{=}128$};
+
+\node[block, fill=cyan!14,   below=6mm of s0]    (s1)   {Stage~1 \quad $\times$2 blocks};
+\node[font=\scriptsize,gray, right=2mm of s1]    {$48{\times}48,\ C{=}256$};
+
+\node[block, fill=cyan!20,   below=6mm of s1]    (s2)   {Stage~2 \quad $\times$18 blocks};
+\node[font=\scriptsize,gray, right=2mm of s2]    {$24{\times}24,\ C{=}512$};
+
+\node[block, fill=cyan!26,   below=6mm of s2]    (s3)   {Stage~3 \quad $\times$2 blocks};
+\node[font=\scriptsize,gray, right=2mm of s3]    {$12{\times}12,\ C{=}1024$};
+
+\node[block, fill=teal!8,    below=6mm of s3]    (avgp) {Global AvgPool};
+\node[font=\scriptsize,gray, right=2mm of avgp]  {$[B,1024]$};
+
+\node[block, fill=violet!15, below=6mm of avgp]  (l2)   {L2-normalize};
+
+\node[block, fill=gray!20,   below=6mm of l2,
+      line width=1.2pt]                           (ret)  {\textbf{Retrieval descriptor}\\$[B,1024]$};
+
+\draw[arr] (inp) -- (emb);
+\draw[arr] (emb) -- (s0);
+\draw[arr] (s0)  -- node[font=\tiny,gray,right]{patch merge} (s1);
+\draw[arr] (s1)  -- node[font=\tiny,gray,right]{patch merge} (s2);
+\draw[arr] (s2)  -- node[font=\tiny,gray,right]{patch merge} (s3);
+\draw[arr] (s3)  -- (avgp);
+\draw[arr] (avgp)-- (l2);
+\draw[arr] (l2)  -- (ret);
+
+%% ─── VQ semantic re-ranking panel (right) ────────────────────────────────
+
+% quantization box, fed from the stage-3 spatial grid
+\node[block, fill=teal!8, minimum width=4.6cm] (vqquant) at (8.6,-5.6)
+  {nearest-centroid quantization\\
+   \scriptsize shared codebook $\mathbf{B}\in\mathbb{R}^{K\times C}$
+   ($k$-means over gallery cells)};
+\draw[vqarr, dashed] (s3.east) to[out=0, in=200]
+  node[below, sloped, font=\tiny, teal!60!black]
+  {stage-3 grid $12{\times}12{\times}1024$} (vqquant.west);
+
+% query + candidate semantic maps
+\semmap{6.6}{-0.6}{0.30}{{cG,cG,cR,cB,cB,cG},{cG,cO,cR,cB,cB,cG},{cR,cR,cR,cR,cR,cR},{cB,cB,cR,cG,cG,cG},{cB,cB,cR,cG,cW,cW},{cG,cG,cR,cW,cW,cW}}
+\node[font=\scriptsize, align=center] at (7.5,-0.25) {query map $Q$};
+\semmap{9.6}{-0.6}{0.30}{{cB,cB,cB,cR,cG,cG},{cG,cB,cB,cR,cO,cG},{cR,cR,cR,cR,cR,cR},{cW,cG,cG,cR,cB,cB},{cW,cW,cG,cR,cB,cB},{cW,cW,cG,cR,cG,cG}}
+\node[font=\scriptsize, align=center] at (10.5,-0.25) {candidate map $T$};
+\node[font=\tiny, gray, align=center] at (9.0,-2.75)
+  {$H{\times}W$ centroid IDs — 144\,B/image};
+\draw[vqarr] (vqquant.north) to[out=90, in=270] (7.5,-2.5);
+\draw[vqarr] (vqquant.north) to[out=90, in=270] (10.5,-2.5);
+
+% rotation search row
+\node[font=\scriptsize, align=left, anchor=west] at (6.4,-3.25)
+  {rotation search over $\mathrm{rot}_r(T)$:};
+\semmap{6.6}{-3.6}{0.15}{{cB,cB,cB,cR,cG,cG},{cG,cB,cB,cR,cO,cG},{cR,cR,cR,cR,cR,cR},{cW,cG,cG,cR,cB,cB},{cW,cW,cG,cR,cB,cB},{cW,cW,cG,cR,cG,cG}}
+\semmap{7.9}{-3.6}{0.15}{{cG,cG,cR,cB,cB,cG},{cG,cO,cR,cB,cB,cG},{cR,cR,cR,cR,cR,cR},{cB,cB,cR,cG,cG,cG},{cB,cB,cR,cG,cW,cW},{cB,cG,cR,cW,cW,cW}}
+\semmap{9.2}{-3.6}{0.15}{{cG,cG,cR,cG,cW,cW},{cB,cB,cR,cG,cW,cW},{cB,cB,cR,cG,cG,cW},{cR,cR,cR,cR,cR,cR},{cG,cO,cR,cB,cB,cG},{cG,cG,cR,cB,cB,cB}}
+\semmap{10.5}{-3.6}{0.15}{{cW,cW,cW,cR,cG,cB},{cW,cW,cG,cR,cB,cB},{cG,cG,cG,cR,cB,cB},{cR,cR,cR,cR,cR,cR},{cG,cB,cB,cR,cO,cG},{cG,cB,cB,cR,cG,cG}}
+\node[font=\tiny] at (7.05,-4.75) {$0^\circ$: 0.25};
+\node[font=\tiny, teal!60!black] at (8.35,-4.75) {$90^\circ$: \textbf{0.97}};
+\node[font=\tiny] at (9.65,-4.75) {$180^\circ$: 0.28};
+\node[font=\tiny] at (10.95,-4.75) {$270^\circ$: 0.14};
+\draw[teal!70!black, line width=0.9pt, rounded corners=1pt]
+  (7.82,-4.58) rectangle (8.88,-3.52);
+
+% blended score
+\node[block, fill=gray!10, minimum width=4.6cm] (vqscore) at (8.6,-7.4)
+  {$m(q,t)=\max_r \frac{1}{HW}\sum_p
+     \mathbb{1}[Q{=}\mathrm{rot}_r(T)] = 0.97$\\[1pt]
+   \scriptsize $S'(q,t)=S(q,t)+\alpha\,m(q,t)$ \quad (top-$N$ only)};
+\draw[vqarr] (8.6,-4.9) -- (vqscore.north);
+
+%% ─── Backbone bounding box ───────────────────────────────────────────────
+
+\begin{scope}[on background layer]
+  \node[draw=teal!55, dashed, rounded corners=5pt,
+        inner sep=8pt, fill=teal!3,
+        fit=(inp)(emb)(s0)(s1)(s2)(s3)(avgp),
+        label={[font=\footnotesize\itshape, color=teal!65]above:
+          {Swin-B Backbone (last stages fine-tuned)}}] (bbbox) {};
+\end{scope}
+
+\end{tikzpicture}%
+}
+\caption{Model architecture and vector-quantized semantic re-ranking.
+\textbf{Left:} Swin-B backbone with four stages of progressively downsampled
+spatial tokens; the globally pooled, L2-normalized 1024-D backbone output is
+the retrieval descriptor — no projection head. The same descriptor serves
+matching, K-means cluster routing, candidate scoring, and the
+cluster-structured hard-negative mining of Section~\ref{sec:hard_mining}.
+\textbf{Right} (Section~\ref{sec:vq_rerank}): the stage-3 spatial grid of
+each image is quantized against one shared $k$-means codebook into an
+$H{\times}W$ map of centroid IDs (schematic $6{\times}6$ shown; actual
+$12{\times}12$, 144 bytes per image). A query's top-$N$ coarse candidates are
+re-scored by mean cell-wise ID agreement $m(q,t)$, maximized over the four
+cardinal rotations of the candidate map (here $90^\circ$ wins with
+$m{=}0.97$; reflections deliberately excluded), and blended into the coarse
+similarity within the top-$N$ only.}
+\label{fig:architecture}
+\end{figure*}
+
+\subsection{Methodological Comparison with Close Baselines}
+The proposed method is closest to GLVL, DenseUAV-style dense retrieval,
+Sample4Geo, and TransGeo, but it occupies a different design point from each.
+GLVL and the proposed method both adopt a coarse-to-fine localization
+philosophy. GLVL retrieves a coarse map region and then applies a local
+matching module for precise coordinate estimation \cite{li2023glvl}. The
+proposed method instead keeps the refinement stage in descriptor space: the
+retrieval descriptor selects candidate regions by learned embedding clusters and scores
+map tiles inside those clusters. This avoids invoking a
+separate local-feature matcher for every query and makes map-side computation
+straightforward to cache.
+
+DenseUAV-style retrieval increases localization resolution by constructing a
+dense satellite gallery and evaluating UAV queries against many candidate
+tiles \cite{dai2024denseuav}. This strategy is effective when the candidate
+gallery is fixed and densely annotated, but its online cost grows with the
+number of satellite crops. The proposed method uses the Game4Loc multi-zoom tile gallery,
+but reduces the number of online comparisons by
+searching only the top-$K_c$ embedding clusters. Thus, the main comparison to
+DenseUAV is not only Recall@K, but also candidates per query and latency per
+query.
+
+Sample4Geo provides a strong contrastive-learning baseline because it learns a
+single global retrieval descriptor with symmetric InfoNCE and hard-negative
+sampling \cite{deuser2023sample4geo}. The proposed method inherits the same
+general metric-learning motivation but changes the retrieval structure. Rather
+than performing flat global ranking over all tiles, the proposed architecture
+optimizes one retrieval descriptor for stable routing and uses the same
+space for local candidate scoring. Clustered search reduces the number of
+candidate comparisons while keeping map embeddings cacheable.
+
+TransGeo is a relevant transformer-based cross-view retrieval baseline because
+it uses attention to model long-range correspondences between views
+\cite{zhu2022transgeo}. In contrast, the proposed method does not train a full
+transformer retrieval model end to end. It fine-tunes only the last stages of
+a pretrained backbone, with the raw normalized output as the descriptor. This
+choice reduces training cost and makes the
+comparison focus on the proposed cluster-routed retrieval and mining
+mechanism rather than on backbone capacity alone.
+
+\section{Training Objective}
+\subsection{Descriptor Training}
+Training fine-tunes the last backbone stages; the descriptor itself is the
+normalized backbone output, so no separate head parameters exist. The
+objective is to assign
+anchor-positive pairs to the same K-means cluster while maintaining descriptor
+variance and suppressing hard negatives.
+
+For a mini-batch of retrieval descriptors $\mathbf{q}_i$ and
+$\mathbf{p}_i$, paired in-batch InfoNCE is
+\begin{equation}
+\mathcal{L}_{align}
+=-\frac{1}{B}\sum_i
+\log
+\frac{\exp(\mathbf{q}_i^T\mathbf{p}_i/\tau)}
+{\sum_j\exp(\mathbf{q}_i^T\mathbf{p}_j/\tau)},
+\quad \tau=0.10.
+\end{equation}
+
+The variance regularizer prevents collapse:
+\begin{equation}
+\mathcal{L}_{var}=
+\frac{1}{D}\sum_d
+\max\left(0,\frac{1}{\sqrt{D}}-\sqrt{\mathrm{Var}(\mathbf{Z}_{:,d})+10^{-4}}\right),
+\end{equation}
+where $\mathbf{Z}$ stacks anchor and positive descriptors and $D$ is the
+descriptor dimension ($1024$ for Swin-B, $768$ for ConvNeXt-T).
+
+For sampled negatives $\mathbf{n}_{ij}$, the same-cluster hard-negative margin
+is
+\begin{equation}
+\mathcal{L}_{neg} =
+\mathbb{E}_{i,j}\left[
+\max\left(0,
+\frac{1}{2}(\mathbf{q}_i^T\mathbf{n}_{ij}
++\mathbf{p}_i^T\mathbf{n}_{ij})-0.60
+\right)^2
+\right].
+\end{equation}
+
+The implemented training loss is
+\begin{equation}
+\mathcal{L} =
+1.0\mathcal{L}_{align}
++1.0\mathcal{L}_{var}
++0.2\mathcal{L}_{neg}
++2.0\mathcal{L}_{consistency}.
+\end{equation}
+The cluster-consistency term is activated once centroids are available. It
+matches the soft centroid assignment distributions of each anchor-positive
+pair:
+\begin{equation}
+\mathcal{L}_{consistency} =
+\frac{1}{2}\left[
+\mathrm{KL}(\pi(\mathbf{q}_i)\|\pi(\mathbf{p}_i))+
+\mathrm{KL}(\pi(\mathbf{p}_i)\|\pi(\mathbf{q}_i))
+\right],
+\end{equation}
+where $\pi(\mathbf{x})=\mathrm{softmax}(\mathbf{x}\mathbf{C}^{T}/0.10)$.
+The primary monitoring metric is the anchor-positive same-cluster probability.
+
+\subsection{Negative Sampling}
+Following the cluster-structured mining of Section~\ref{sec:hard_mining},
+training samples negatives using a mixture of 50\% same-cluster, 30\% nearby
+cluster, and 20\% random global negatives. Hard same-cluster samples are
+selected by similarity in the cached descriptor bank, and candidates sharing
+a positive tile with the anchor are excluded from the pool.
+
+\subsection{Dead-Cluster Filtering}
+During training, the trainer identifies unreliable routing clusters using
+anchor-positive assignment consistency rather than cluster compactness. High
+intra-cluster similarity is expected because the descriptor is explicitly
+trained to group similar terrain and corresponding crop pairs. A cluster is
+therefore treated as dead only when its anchor-positive same-cluster rate is
+below 0.50, or when the cluster descriptors are nearly collapsed according to
+very low per-dimension descriptor variance. These dead clusters are recorded
+as a diagnostic property of the descriptor space and saved in the checkpoint
+together with representative sample indices. The current training procedure
+does not remove those samples; the diagnostic is used for inspection.
+
+\section{Clustering and Checkpointing}
+At the beginning of each epoch, the trainer extracts retrieval
+descriptors for anchors and positives, runs FAISS K-means
+\cite{macqueen1967methods,johnson2019billion},
+assigns samples to clusters, and computes the anchor-positive same-cluster
+probability. K-means is re-run when this probability is below 0.80. The first
+epoch uses multiple random restarts, while later epochs warm-start from the
+previous centroids. Checkpoints store the backbone,
+optimizer state, loss history, training parameters, K-means
+centroids, diagnostic per-cluster mean embeddings, and the last training mode.
+Checkpoint filenames are keyed by backbone, for example
+\texttt{latest\_swin\_b\_nohead.pt} or \texttt{latest\_convnext\_t.pt}, with
+timestamped backups saved before overwriting.
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.95\linewidth}
+\begin{algorithmic}[1]
+\STATE Initialize pretrained backbone (Swin-B or ConvNeXt-T)
+\STATE Freeze early backbone stages; unfreeze the last stages for fine-tuning
+\FOR{each training epoch}
+    \STATE Extract L2-normalized retrieval descriptors
+    \STATE Rebuild or warm-start FAISS K-means when same-cluster probability is low
+    \STATE Mine hard negatives from same and nearest clusters (co-positive exclusion)
+    \STATE Train with InfoNCE, variance, negative, and consistency losses
+\ENDFOR
+\STATE Save model weights, K-means centroids, training parameters, and diagnostics
+\end{algorithmic}
+\end{minipage}
+\caption{Descriptor training procedure.}
+\label{alg:training}
+\end{figure}
+
+\section{Evaluation Pipeline}
+\subsection{Map Tiling}
+\label{sec:eval}
+The evaluation gallery follows the Game4Loc tiling protocol
+\cite{ji2024game4loc}.
+Each area in UAV-VisLoc is accompanied by a pre-tiled satellite image pyramid:
+the full-resolution map is downsampled and sliced into non-overlapping
+$256\times256$-pixel tiles at multiple zoom levels.
+Given the full-resolution satellite image of dimensions $H\times W$ pixels,
+the maximum zoom level is
+\begin{equation}
+    z_{\max} = \left\lceil \log_2 \frac{\max(H,W)}{256} \right\rceil.
+\end{equation}
+At zoom level $z$, the image is scaled by factor $s = 2^{z_{\max}-z}$,
+yielding a scaled canvas of size
+$\lceil H/s \rceil \times \lceil W/s \rceil$ pixels.
+This canvas is partitioned into a grid of $256\times 256$ tiles indexed by
+column $x$ and row $y$.
+Coarser zoom levels ($z < z_{\max}$, larger $s$) produce tiles that cover
+proportionally larger geographic footprints, spanning from tens of metres at
+fine zoom to several hundred metres at coarse zoom.
+The gallery spans four consecutive zoom levels to present tiles at a range
+of geographic scales.
+
+Each tile is identified by the naming convention
+\texttt{\{area\}\_\{z\}\_\{x\}\_\{y\}.png}.
+The geographic centre and bounds of a tile are recovered analytically from
+the known area bounding box $(lat_{lt}, lon_{lt}, lat_{rb}, lon_{rb})$:
+\begin{equation}
+\begin{split}
+    lat_c &= lat_{lt} -
+        \frac{(y+\tfrac{1}{2})\cdot 256}{\lceil H/s \rceil}
+        (lat_{lt} - lat_{rb}),\\
+    lon_c &= lon_{lt} +
+        \frac{(x+\tfrac{1}{2})\cdot 256}{\lceil W/s \rceil}
+        (lon_{rb} - lon_{lt}).
+\end{split}
+\end{equation}
+No online GeoTIFF slicing is required; tile images ship with the dataset.
+
+\paragraph{Positive tile labelling.}
+For each drone query, positives tiles are identified by pixel-space IoU
+between the tile polygon and the UAV ground footprint.
+The footprint is computed from the recorded altitude, heading angle, and
+the camera field of view ($\mathrm{FOV}_H=36^\circ$, $\mathrm{FOV}_V=52^\circ$)
+following the Game4Loc geometric model \cite{ji2024game4loc}.
+Both the footprint and tile corners are projected into the scaled pixel space
+at zoom $z$ before the intersection is computed.
+A tile is labelled a \emph{positive} if $\mathrm{IoU} \geq 0.39$, a
+\emph{semi-positive} if $\mathrm{IoU} \geq 0.14$, and a \emph{negative}
+otherwise. A tile that falls fully within the drone footprint
+(tile recall $\geq 0.80$) is also counted as a positive even when the
+IoU falls below the primary threshold; this prevents fine-zoom tiles
+from being incorrectly excluded when the drone footprint is much larger
+than the tile.
+
+Tile embeddings are cached keyed by the checkpoint hash, so repeated
+evaluations over the same area and checkpoint skip gallery extraction entirely.
+Query embeddings are cached separately per sequence.
+
+\subsection{Coarse-to-Fine Retrieval}
+Map tiles are embedded with the retrieval descriptor and clustered with FAISS. The
+cluster data cache stores assignments, centroids, and a cluster-to-tile index.
+
+For a query image, the retrieval descriptor finds the top-$K_c$ nearest
+clusters. The candidate set is the union of all tiles assigned to those
+clusters. Candidate tiles are scored directly with the retrieval descriptor
+and the configured scoring mode. The number of searched clusters, $K_c$,
+controls the trade-off between candidate set size and recall.
+
+The online scoring cost is reduced in proportion to the fraction of clusters
+searched. Let $N$ be the number of gallery tiles, $K$ the number of routing
+clusters, and $K_c$ the number of nearest clusters searched per query. If tile
+assignments are approximately balanced, the expected candidate count is
+\begin{equation}
+    \mathbb{E}[|\mathcal{C}(q)|] \approx \frac{K_c}{K}N,
+\end{equation}
+so the fine-stage descriptor scoring cost is reduced by a factor of
+$K/K_c$ compared with exhaustive gallery scoring. For example, with $K=16$
+and $K_c=2$, the expected fine-stage candidate set contains $N/8$ tiles.
+
+The recall loss introduced by routing depends on whether the positive tile is
+assigned to one of the searched clusters. Let $p_s$ denote the probability
+that a positive query-tile pair is recovered by one searched cluster. Under a
+simple independent-cluster approximation, the coarse-stage miss probability
+after searching $K_c$ clusters is
+\begin{equation}
+    P_{\mathrm{miss}} \approx (1-p_s)^{K_c}.
+\end{equation}
+Thus, if $p_s=0.90$ and $K_c=2$, then
+$P_{\mathrm{miss}}\approx(1-0.90)^2=0.01$, meaning that the coarse stage
+retains the positive candidate with approximately 99\% probability while
+scoring only one eighth of the gallery.
+
+\subsection{Vector-Quantized Semantic Re-Ranking}
+\label{sec:vq_rerank}
+On densely tiled galleries, coarse retrieval exhibits a characteristic gap:
+Recall@10 approaches saturation while Recall@1 remains several points lower,
+i.e., the correct tile is almost always among the strongest candidates but is
+not always ranked first. This gap has a structural cause. When the tile
+sampling interval is much smaller than the tile footprint — DenseUAV samples
+$\sim$100\,m tiles at $\sim$20\,m intervals — a query's strongest candidates
+are near-duplicate, heavily overlapping views of the same ground: they
+contain nearly the same buildings, roads, and vegetation, differing mainly
+in \emph{where} that content sits within the frame. The globally pooled
+retrieval descriptor is structurally blind to exactly this difference:
+average pooling discards the spatial arrangement of features, so two
+shifted views of the same content map to nearly identical descriptors
+regardless of how well the descriptor is trained. Separating such
+candidates therefore requires a second, \emph{spatially structured}
+representation that preserves arrangement. An optional final stage
+re-orders each query's top-$N$ coarse candidates using vector-quantized
+semantic maps derived from intermediate backbone features — retaining the
+layout information that pooling destroys, at a per-image cost of a few
+hundred bytes.
+
+This mechanism also predicts where the stage applies: on galleries whose
+tiles are distinct, non-overlapping locations (one tile per location, or
+one satellite image per building), coarse errors occur between
+different-content places that the global descriptor already separates, and
+layout agreement contributes no additional signal — the re-ranking stage
+should then be disabled. Table~\ref{tab:soa_denseuav} reflects this:
+the re-ranked rows are reported for the densely tiled DenseUAV benchmark,
+where the stage contributes its largest gains.
+
+Let the stage-3 feature grid of an image be an $H \times W$ array of cell
+descriptors $\mathbf{x}_{p} \in \mathbb{R}^{C}$ (for Swin-B at $384^2$,
+$H{=}W{=}12$ and $C{=}1024$). A single codebook
+$\mathbf{B} \in \mathbb{R}^{K \times C}$ is fit once by $k$-means over
+$\ell_2$-normalized cell descriptors sampled across the gallery, following
+the vector-quantization tradition of visual-word retrieval
+\cite{sivic2003video} and product quantization \cite{jegou2011product}.
+Every image is then stored as an $H \times W$ array of nearest-centroid
+indices — a \emph{semantic map} occupying $H\!\cdot\!W$ bytes per image for
+$K \le 256$ (144 bytes at stage 3, a $\sim$4000$\times$ reduction over the
+full-precision grid), plus one shared codebook.
+
+The agreement between a query map $Q$ and a candidate map $T$ is the mean
+cell-wise identity, maximized over the four cardinal rotations of the
+candidate:
+\begin{equation}
+    m(q,t) = \max_{r \in \{0^\circ,90^\circ,180^\circ,270^\circ\}}
+    \frac{1}{HW} \sum_{p} \mathbb{1}\!\left[\,Q(p) = \mathrm{rot}_r(T)(p)\,\right].
+\end{equation}
+The rotation search accounts for arbitrary UAV yaw against north-up satellite
+tiles; reflections are deliberately excluded so that mirrored look-alike
+structures — a recurring false-match mode in dense urban galleries — score
+low rather than high. Exact index identity is used rather than soft
+centroid-similarity credit: spatially adjacent tiles share similar content
+whose cells quantize to \emph{neighboring} clusters, and partial credit
+rewards precisely those near-miss cells, whereas consistent exact-identity
+agreement is delivered only by the true location.
+
+The final score blends the map agreement into the coarse similarity within
+each query's top-$N$ candidates only,
+\begin{equation}
+    S'(q,t) = S(q,t) + \alpha\, m(q,t), \qquad t \in \mathrm{top}\text{-}N(q),
+\end{equation}
+with all other gallery scores unchanged. Because the additive term is
+non-negative and confined to the top-$N$ set, no candidate outside the set
+can be displaced into it, so Recall@$N$ is invariant by construction and the
+stage acts purely on the ordering within the shortlist. The added cost is
+$O(N \cdot HW)$ integer comparisons per query — negligible against the
+embedding forward pass — and the per-image payload is small enough to hold
+the semantic maps of an entire city-scale gallery in a few megabytes.
+
+\subsection{Comparison with Alternative Coarse-to-Fine Strategies}
+The proposed retrieval mechanism differs from several common coarse-to-fine
+localization strategies. In global-local retrieval systems such as GLVL, the
+coarse stage retrieves a candidate map region and the fine stage applies a
+local matching module to refine the coordinate estimate \cite{li2023glvl}.
+This approach provides explicit spatial refinement, but it requires a
+separate fine-localization module after retrieval. In contrast, the proposed
+method restricts the candidate set in descriptor space and then scores those
+candidates using the same descriptor.
+
+Dense tiling methods, including DenseUAV-style benchmark protocols, increase
+localization resolution by evaluating many overlapping satellite crops
+\cite{dai2024denseuav}. This strategy is simple and map-geometry compatible,
+but the search cost grows with tile density. The proposed method uses the Game4Loc pre-tiled gallery at multiple zoom
+levels, yet reduces the candidate set through learned embedding clusters
+before final scoring. Classical image-retrieval pipelines
+often use a global descriptor followed by geometric verification with local
+features; such methods can improve precision but add feature matching,
+outlier rejection, and pose-estimation costs. By comparison, the proposed
+pipeline keeps both stages descriptor-based and therefore directly cacheable
+for large map tiles.
+
+Recent absolute localization methods also incorporate temporal or
+multi-sensor refinement, such as visual-inertial optimization in RTAPM
+\cite{tong2025rtapm}, vector-map matching in VecMapLocNet
+\cite{hao2025vecmaploc}, and rendered-view indexing from 3D references
+\cite{li2025viewpoint}. These methods can improve robustness when additional
+signals or map modalities are available. The proposed method is restricted to
+image-to-GeoTIFF matching, making it applicable to settings where only UAV
+imagery, a georeferenced raster map, and query metadata are available.
+
+\begin{table}[htbp]
+\caption{Comparison of Coarse-to-Fine Localization Strategies}
+\label{tab:coarse_fine_comparison}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.23\columnwidth}
+                >{\raggedright\arraybackslash}p{0.32\columnwidth}
+                >{\raggedright\arraybackslash}p{0.34\columnwidth}}
+\toprule
+Strategy & Coarse stage & Fine stage \\
+\midrule
+Global-local retrieval \cite{li2023glvl} &
+Retrieve candidate region with a global descriptor &
+Apply local matching or coordinate refinement \\
+Dense tile retrieval \cite{dai2024denseuav} &
+Enumerate many overlapping map crops &
+Rank dense crop candidates by image similarity \\
+Game4Loc hierarchical tiling \cite{ji2024game4loc} &
+Construct a multi-zoom satellite gallery and train with partial-match weights &
+Rank drone-to-satellite candidates and score with Recall, AP, SDM, and distance error \\
+Temporal or multi-sensor absolute localization \cite{tong2025rtapm,hao2025vecmaploc,li2025viewpoint} &
+Use retrieval, vector maps, rendered views, or sensor priors &
+Refine with temporal filtering, map constraints, or optimization \\
+Proposed cluster-routed retrieval &
+Select top-$K_c$ learned embedding clusters &
+Score candidates with the retrieval descriptor; optional VQ semantic re-ranking of the top candidates \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ground-Truth Filtering and Query Orientation}
+For UAV-VisLoc sequence 01, query geometry is read from \texttt{01.csv}.
+Only queries whose ground-truth coordinate falls inside the selected GeoTIFF
+bounds are evaluated. If enabled, query orientation metadata can be used as a
+preprocessing correction before model inference; otherwise the query is
+embedded directly and scored against the selected map-tile candidates.
+
+\subsection{Metric}
+Evaluation follows the Game4Loc IoU-based matching protocol
+\cite{ji2024game4loc}.
+A retrieved tile $m_j$ is counted as a hit for query $q_i$ if and only if it
+is a positive tile under the criterion defined in Section~\ref{sec:eval}:
+\begin{equation}
+  \mathrm{hit}(q_i, m_j) =
+  \begin{cases}
+    1 & \text{if } \mathrm{IoU}(m_j, F_i) \geq 0.39
+        \text{ or } \mathrm{recall}(m_j, F_i) \geq 0.80, \\
+    0 & \text{otherwise,}
+  \end{cases}
+\end{equation}
+where $F_i$ is the drone ground footprint computed from altitude, heading,
+and camera FOV ($\mathrm{FOV}_H=36^\circ$, $\mathrm{FOV}_V=52^\circ$), and
+$\mathrm{recall}(m_j, F_i) = |m_j \cap F_i| / |m_j|$ is the fraction of
+the tile area covered by the drone footprint.
+Recall@K is then
+\begin{equation}
+\mathrm{Recall@K} =
+\frac{1}{|\mathcal{Q}|}\sum_i
+\mathbb{1}\!\left[
+\exists m_j\in \mathrm{TopK}(q_i):
+\mathrm{hit}(q_i, m_j) = 1
+\right].
+\end{equation}
+Average precision (AP) is computed per query from the binary hit labels
+on the ranked retrieved list.
+SDM@K weights the top-$K$ retrieved locations by both rank and
+geographic closeness:
+\begin{equation}
+\mathrm{SDM@K} =
+\frac{\sum_{r=1}^{K}(K-r+1)\exp(-\gamma d_r)}
+{\sum_{r=1}^{K}(K-r+1)},
+\end{equation}
+where $d_r$ is the distance between the query location and the tile retrieved
+at rank $r$, and $\gamma$ is the evaluator's distance scale. The evaluator
+reports \texttt{sdm\_at\_1} and \texttt{sdm\_at\_k}. It also reports
+\texttt{dis\_at\_1} and \texttt{dis\_at\_k}, the mean geographic error in
+meters for the top-1 result and the top-$K$ retrieved set. Query throughput is
+reported as FPS after cached map preprocessing.
+
+\section{Implementation Details}
+The implementation is written in Python using PyTorch, \texttt{timm}, FAISS,
+rasterio, matplotlib, OpenCV, Kornia, and PyQt5. CUDA and automatic mixed
+precision are used when a CUDA-enabled PyTorch build is available. The
+training pipeline parameterizes epochs, batch size, GPU micro-batch size,
+learning rate, weight decay, device selection, worker count, mixed precision,
+checkpoint resumption, data shuffling, backbone-tail unfreezing,
+target cluster count, loss weights, backbone selection, and
+adaptive cluster rebuilding.
+
+The evaluation interface separates parameter configuration from result
+inspection. It supports VisLoc sequence selection, automatic map and CSV
+detection, checkpoint-aware feature caching, and
+comparison runs between checkpoints. It visualizes the map cluster matrix as a
+two-dimensional tile grid where cells with the same color belong to the same
+embedding cluster.
+Clusters with low descriptor variance can be highlighted as diagnostics,
+allowing the user to inspect routing failure without removing those tiles from
+retrieval. The interface also
+supports a comparison model with an independent checkpoint and cluster count,
+which allows controlled evaluation of alternative $K$ values or training runs
+on the same map and query sequence.
+Query-level inspection reports the original UAV image, the matched crop, the
+top-$K$ matching crop when applicable, and the crop nearest to ground truth.
+
+\section{Experimental Protocol}
+The primary evaluation dataset is UAV-VisLoc \cite{xu2024uavvisloc}.
+Evaluation applies the Game4Loc tiling and matching protocol directly to the
+UAV-VisLoc satellite maps and drone sequences: the pre-tiled gallery
+($256\times256$ px, four zoom levels per area) is embedded and clustered,
+query images are matched against cluster candidates, and hits are identified
+by the Game4Loc IoU criterion (IoU $\geq 0.39$ or tile recall $\geq 0.80$).
+Altitude and heading metadata are read from the per-sequence CSV file to
+compute drone footprints for IoU evaluation.
+Table~\ref{tab:config} summarizes the evaluation configuration.
+
+UAV-VisLoc is chosen as the primary evaluation benchmark because it provides
+large georeferenced satellite maps, realistic UAV imagery with pose metadata
+(altitude, heading), diverse terrains, and multiple areas — matching the
+intended operating condition of the proposed pipeline. Applying the Game4Loc
+protocol to UAV-VisLoc aligns hit labelling, gallery structure, and reported
+metrics with the Game4Loc standard while evaluating on a real-world dataset
+rather than a synthetic game engine environment.
+
+\subsection{Game4Loc Evaluation Protocol Applied to UAV-VisLoc}
+The Game4Loc evaluation protocol is applied as follows.
+The satellite gallery for each UAV-VisLoc area is the pre-tiled image pyramid
+shipped with the dataset (tile naming: \texttt{\{area\}\_\{z\}\_\{x\}\_\{y\}.png},
+$256\times256$ px, zoom levels $z_{\max}-3$ to $z_{\max}$).
+For each drone query, the altitude and heading from the sequence CSV file are
+used to compute the camera footprint with FOV$_H=36^\circ$ and FOV$_V=52^\circ$.
+Positive tiles are those with IoU $\geq 0.39$ or tile recall $\geq 0.80$
+against this footprint.
+Retrieval is performed in drone-to-satellite (D2S) direction.
+Same-area evaluation uses the sequences whose satellite maps are included in
+the gallery; cross-area evaluation uses a held-out area.
+Reported metrics are Recall@1, Recall@5, AP, SDM@1, SDM@5, Dis@1, Dis@5,
+and query throughput (FPS). Table~\ref{tab:game4loc_condition} summarizes the
+protocol.
+
+The training condition differs from Game4Loc's own training data: whereas
+Game4Loc trains on GTA-UAV synthetic drone-to-satellite pairs, the proposed
+system trains on real UAV-VisLoc D2S pairs (using the same Game4Loc tiling
+protocol) as described in Section~\ref{sec:training_data}. The evaluation
+protocol, gallery structure, and metrics are identical to Game4Loc.
+
+\begin{table}[htbp]
+\caption{Game4Loc Protocol Applied to UAV-VisLoc}
+\label{tab:game4loc_condition}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.40\columnwidth}
+                >{\raggedright\arraybackslash}p{0.52\columnwidth}}
+\toprule
+Component & Setting \\
+\midrule
+Dataset & UAV-VisLoc (real UAV imagery, 10 areas) \\
+Reference gallery & Pre-tiled $256{\times}256$ px pyramid, 4 zoom levels per area \\
+Positive criterion & IoU $\geq 0.39$ or tile recall $\geq 0.80$ \\
+Semi-positive criterion & IoU $\geq 0.14$ \\
+Camera model & FOV$_H=36^\circ$, FOV$_V=52^\circ$; altitude and heading from CSV \\
+Retrieval direction & Drone-to-satellite (D2S) \\
+Training data & UAV-VisLoc D2S pairs (Game4Loc tiling, pos + semi-pos IoU weights) \\
+Metrics & Recall@1/5, AP, SDM@1/5, Dis@1/5, FPS \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\caption{Evaluation Configuration}
+\label{tab:config}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.46\columnwidth}
+                >{\raggedright\arraybackslash}p{0.46\columnwidth}}
+\toprule
+Parameter & Value \\
+\midrule
+Backbone & Swin-B (primary) or ConvNeXt-T, last stages unfrozen \\
+Retrieval descriptor & Raw L2-normalized backbone output: 1024D (Swin-B), 768D (ConvNeXt-T); no head \\
+Default number of clusters & 8--16 (configurable) \\
+Map tile gallery & Game4Loc pre-tiled: $256\times256$ px at $z_{\max}-3$ to $z_{\max}$ zoom levels \\
+Positive IoU threshold & $\geq 0.39$ (semi-positive $\geq 0.14$; tile recall $\geq 0.80$) \\
+Training loss & $1.0$ InfoNCE + $1.0$ variance + $0.2$ hard negative margin + $2.0$ consistency \\
+Hit criterion & Retrieved tile has IoU $\geq 0.39$ with drone footprint \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Results and Discussion}
+The experimental comparison is designed to isolate three claims: cluster
+routing reduces retrieval cost, cluster-constrained candidate scoring improves
+within-cluster matching, and the resulting speed-accuracy trade-off generalizes
+beyond a single UAV-VisLoc sequence. The reported metrics follow the schema
+exported by \texttt{eval\_history\_runs.json}: Recall@1, Recall@K, AP,
+SDM@1, SDM@K, distance error, query throughput, tile/stride setting, and
+cluster count.
+
+Table~\ref{tab:ablation} evaluates the contribution of each architectural and
+evaluation component using representative sequence-04 runs. In particular, it
+tests whether the learned descriptor and cluster routing improve over flat
+descriptor search.
+
+\begin{table}[htbp]
+\caption{Ablation Study. UAV-VisLoc seq.~04 (top) and GTA-UAV same-area under Game4Loc tiling (bottom). Bold = best per section per metric. $\dagger$~SDM@3 (Game4Loc paper reports SDM@3; ours are SDM@1).}
+\label{tab:ablation}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.33\columnwidth}
+                >{\centering\arraybackslash}p{0.11\columnwidth}
+                >{\centering\arraybackslash}p{0.11\columnwidth}
+                >{\centering\arraybackslash}p{0.11\columnwidth}
+                >{\centering\arraybackslash}p{0.12\columnwidth}
+                >{\centering\arraybackslash}p{0.12\columnwidth}}
+\toprule
+Variant & R@1 & R@5 & AP & SDM@1 & FPS \\
+\midrule
+\multicolumn{6}{l}{\textit{UAV-VisLoc, seq.~04}} \\
+\midrule
+Flat raw Swin-T & 0.3916 & 0.6016 & -- & -- & 859.3 \\
+Flat learned descriptor, cosine & 0.6233 & 0.8171 & 0.3011 & -- & 313.9 \\
+Flat learned descriptor, centered & 0.6165 & 0.8225 & 0.3290 & -- & 363.0 \\
+Two-stage, centered & 0.6369 & 0.9675 & 0.5289 & -- & 515.0 \\
+Two-stage, cluster-Mahalanobis & \textbf{0.9187} & \textbf{1.0000} & \textbf{0.7188} & \textbf{0.6895} & 499.5 \\
+\midrule
+\multicolumn{6}{l}{\textit{GTA-UAV same-area (Game4Loc tiling)}} \\
+\midrule
+Game4Loc~\cite{ji2024game4loc} (paper) & 0.8495 & 0.9759 & \textbf{0.9015} & $0.8803^\dagger$ & -- \\
+Flat descriptor, cosine (ours) & 0.8874 & \textbf{0.9868} & -- & \textbf{0.8473} & -- \\
+Two-stage, cosine (ours) & \textbf{0.9007} & 0.9834 & -- & 0.8340 & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:cluster_tradeoff} reports representative evaluation-history
+rows showing how the routing cluster count and searched-cluster width relate
+to recall and throughput. These rows are not a fully controlled hyperparameter
+sweep, but they match the metrics emitted by the current evaluator and provide
+the reporting format for a controlled sweep.
+
+\begin{table}[htbp]
+\caption{Cluster Granularity and Search-Width Trade-off}
+\label{tab:cluster_tradeoff}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\centering\arraybackslash}p{0.11\columnwidth}
+                >{\centering\arraybackslash}p{0.13\columnwidth}
+                >{\centering\arraybackslash}p{0.13\columnwidth}
+                >{\centering\arraybackslash}p{0.13\columnwidth}
+                >{\centering\arraybackslash}p{0.13\columnwidth}
+                >{\centering\arraybackslash}p{0.13\columnwidth}
+                >{\centering\arraybackslash}p{0.13\columnwidth}}
+\toprule
+Run & $K$ & Seq. & R@1 & R@5 & SDM@1 & FPS \\
+\midrule
+72 & 8 & 04 & 0.5325 & 0.9499 & 0.4132 & 251.3 \\
+87 & 16 & 04 & 0.9187 & 1.0000 & 0.6895 & 499.5 \\
+3 & 32 & 04 & 0.6314 & 0.9539 & -- & 401.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:cost_breakdown} separates one-time map preprocessing from
+per-query retrieval. This distinction is necessary because map tiling,
+embedding extraction, and FAISS clustering can be cached, whereas query
+encoding and candidate scoring determine online localization latency.
+
+\begin{table}[htbp]
+\caption{Computational Cost Breakdown}
+\label{tab:cost_breakdown}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.42\columnwidth}
+                >{\centering\arraybackslash}p{0.22\columnwidth}
+                >{\centering\arraybackslash}p{0.24\columnwidth}}
+\toprule
+Component & Runtime role & Cache behavior \\
+\midrule
+GeoTIFF tiling & One-time preprocessing & Cached by map and tile geometry \\
+Map descriptor embedding & One-time preprocessing & Cached by checkpoint hash \\
+FAISS map K-means & One-time preprocessing & Cached with tile assignments \\
+Query embedding & Per-query online & Cached by checkpoint and image \\
+Candidate scoring & Per-query online & Not cached across new queries \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:sequence_generalization} evaluates whether the method remains
+effective on UAV-VisLoc sequences not used for method tuning. If similar
+datasets such as DenseUAV, SUES-200, or University-1652 are used, they can be
+reported in the same format with dataset-specific retrieval metrics.
+
+\begin{table}[htbp]
+\caption{Cross-Sequence Generalization}
+\label{tab:sequence_generalization}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\centering\arraybackslash}p{0.10\columnwidth}
+                >{\centering\arraybackslash}p{0.12\columnwidth}
+                >{\centering\arraybackslash}p{0.12\columnwidth}
+                >{\centering\arraybackslash}p{0.12\columnwidth}
+                >{\centering\arraybackslash}p{0.12\columnwidth}
+                >{\centering\arraybackslash}p{0.13\columnwidth}
+                >{\centering\arraybackslash}p{0.13\columnwidth}}
+\toprule
+Seq. & Queries & R@1 & R@5 & AP & Median hit & Tile/stride \\
+\midrule
+03 & 768 & 0.7747 & 1.0000 & 0.5932 & 110.0 m & 340/110 \\
+04 & 738 & 0.9187 & 1.0000 & 0.7188 & 129.9 m & 400/130 \\
+05 & 473 & 0.4397 & 0.9535 & -- & -- & 260/90 \\
+07 & 28 & 0.4286 & 0.7500 & 0.6118 & 50.1 m & 140/50 \\
+11 & 590 & 0.6034 & 0.9966 & 0.4468 & 190.0 m & 570/190 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ── SUES-200 state-of-the-art comparison ─────────────────────────────────────
+\begin{table*}[htbp]
+\caption{Comparison with state-of-the-art on SUES-200 (Recall@1, \%, drone$\to$satellite).
+         SOTA values as reported in~\cite{li2025cvd}.
+         Ours: official 120/80 train/test location split, evaluated on the 80
+         held-out test locations against their 80 satellite tiles — the same
+         gallery convention used by the compared methods'
+         evaluations\textsuperscript{\S}.}
+\label{tab:soa_sues200}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{l l cccc}
+\toprule
+Method & Backbone & 150\,m & 200\,m & 250\,m & 300\,m \\
+\midrule
+LPN~\cite{wang2021lpn}                 & ResNet-50   & 58.20 & 69.60 & 75.60 & 78.50 \\
+FSRA~\cite{dai2022fsra}                & ViT-S       & 78.70 & 85.65 & 88.95 & 91.50 \\
+MCCG~\cite{shen2024mccg}               & ConvNeXt-T  & 79.96 & 85.01 & 90.47 & 94.20 \\
+Sample4Geo~\cite{deuser2023sample4geo} & ConvNeXt-B  & 94.75 & 96.75 & 97.25 & 97.20 \\
+Game4Loc~\cite{ji2024game4loc}        & ConvNeXt-B  & 94.62 & 96.55 & 97.55 & 97.67 \\
+\midrule
+\textbf{Ours}\textsuperscript{\S} & Swin-B & \textbf{96.30} & \textbf{98.25} & \textbf{99.00} & 99.15 \\
+\textbf{Ours}\textsuperscript{\S,\dag} & ConvNeXt-T & 91.77 & 95.20 & 96.90 & 97.52 \\
+\textbf{Ours}\textsuperscript{\S,\dag} & ConvNeXt-B & 94.97 & 97.28 & 98.50 & \textbf{99.35} \\
+\bottomrule
+\end{tabular}
+
+\smallskip
+\raggedright\footnotesize
+\textsuperscript{\S}\,Under the harder all-200-tile confusion gallery (the 120
+training locations' tiles added as distractors), Swin-B scores 91.72 / 94.15 /
+95.85 / 97.02 (overall R@1 94.69, mAP 96.97), ConvNeXt-T scores 87.10 /
+91.72 / 94.10 / 95.58 (overall R@1 92.12, mAP 95.08), and ConvNeXt-B scores
+93.00 / 95.53 / 97.02 / 97.82 (overall R@1 95.84, mAP 97.46); the compared
+methods do not report this setting. Table~\ref{tab:sues200_detail} reports
+the full per-altitude results for all models and gallery settings.\\
+\textsuperscript{\dag}\,ConvNeXt rows: the DenseUAV-trained epoch-25
+checkpoints (Table~\ref{tab:soa_denseuav}) fine-tuned on SUES-200's own
+official training split (lr=$1\times10^{-5}$, last 2 backbone stages
+unfrozen, 20 epochs) -- the same fine-tuning recipe used for the Swin-B row.
+\end{table*}
+
+% ── SUES-200 detailed per-altitude results (ours) ─────────────────────────────
+\begin{table*}[htbp]
+\caption{Detailed SUES-200 results (\%, drone$\to$satellite, official
+         120/80 split, 16\,000 test queries) for all three of our backbones.
+         Left: the 80-tile test gallery used by the compared methods in
+         Table~\ref{tab:soa_sues200}. Right: the all-200-tile confusion
+         gallery, in which the 120 training locations' satellite tiles act as
+         distractors — a harder setting closer to open-map operation.
+         Recall degrades toward lower altitudes in both settings (smaller
+         ground footprint, less layout context per query) for every backbone,
+         and the confusion gallery costs $2.0$--$4.7$ R@1 points at 150\,m but
+         only $1.4$--$2.1$ at 300\,m.}
+\label{tab:sues200_detail}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{7pt}
+\begin{tabular}{l ccc ccc}
+\toprule
+& \multicolumn{3}{c}{80-tile test gallery}
+& \multicolumn{3}{c}{200-tile confusion gallery} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Altitude & R@1 & R@5 & R@10 & R@1 & R@5 & R@10 \\
+\midrule
+\multicolumn{7}{l}{\textit{Swin-B}} \\
+150\,m   & 96.30 & 99.48  & 100.00 & 91.72 & 98.88  & 99.67 \\
+200\,m   & 98.25 & 99.90  & 100.00 & 94.15 & 99.70  & 99.98 \\
+250\,m   & 99.00 & 100.00 & 100.00 & 95.85 & 99.98  & 100.00 \\
+300\,m   & 99.15 & 100.00 & 100.00 & 97.02 & 100.00 & 100.00 \\
+\midrule
+Overall  & 98.17 & 99.84  & 100.00 & 94.69 & 99.64  & 99.91 \\
+mAP      & \multicolumn{3}{c}{98.90} & \multicolumn{3}{c}{96.97} \\
+\midrule
+\multicolumn{7}{l}{\textit{ConvNeXt-T}} \\
+150\,m   & 91.77 & 98.47  & 99.17  & 87.10 & 97.38  & 98.78 \\
+200\,m   & 95.20 & 99.28  & 99.60  & 91.72 & 98.92  & 99.42 \\
+250\,m   & 96.90 & 99.45  & 99.72  & 94.10 & 99.22  & 99.60 \\
+300\,m   & 97.52 & 99.65  & 99.88  & 95.58 & 99.33  & 99.80 \\
+\midrule
+Overall  & 95.35 & 99.21  & 99.59  & 92.12 & 98.71  & 99.40 \\
+mAP      & \multicolumn{3}{c}{97.04} & \multicolumn{3}{c}{95.08} \\
+\midrule
+\multicolumn{7}{l}{\textit{ConvNeXt-B}} \\
+150\,m   & 94.97 & 98.92  & 99.45  & 93.00 & 98.55  & 99.25 \\
+200\,m   & 97.28 & 99.55  & 99.78  & 95.53 & 99.33  & 99.72 \\
+250\,m   & 98.50 & 99.92  & 100.00 & 97.02 & 99.88  & 99.95 \\
+300\,m   & 99.35 & 100.00 & 100.00 & 97.82 & 100.00 & 100.00 \\
+\midrule
+Overall  & 97.52 & 99.60  & 99.81  & 95.84 & 99.44  & 99.73 \\
+mAP      & \multicolumn{3}{c}{98.43} & \multicolumn{3}{c}{97.46} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+% ── University-1652 state-of-the-art comparison ───────────────────────────────
+\begin{table*}[htbp]
+\caption{Comparison with state-of-the-art on University-1652 (R@1 and AP, \%).
+         D$\!\to\!$S: drone query, satellite gallery ($\sim$37\,855 queries, 951 gallery).
+         S$\!\to\!$D: satellite query, drone gallery (701 queries,
+         $\sim$51\,355 gallery).
+         SOTA values from the official leaderboard~\cite{zheng2020university1652}.
+         Ours: per backbone, one model fine-tuned on the official 701-class
+         training split (the ConvNeXt rows start from their DenseUAV-trained
+         checkpoints of Table~\ref{tab:soa_denseuav}, fine-tuned with
+         lr=$1\times10^{-5}$, last 2 backbone stages unfrozen, 20 epochs --
+         the same recipe as the Swin-B row), both directions evaluated from
+         the same weights; distractor handling and the AP formula follow the
+         official benchmark evaluator.}
+\label{tab:soa_u1652}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{l l cc cc}
+\toprule
+& & \multicolumn{2}{c}{Drone $\to$ Satellite}
+& \multicolumn{2}{c}{Satellite $\to$ Drone} \\
+\cmidrule(lr){3-4}\cmidrule(lr){5-6}
+Method & Backbone & R@1 & AP & R@1 & AP \\
+\midrule
+LPN~\cite{wang2021lpn}                 & ResNet-50  & 75.93 & 79.14 & 86.45 & 74.79 \\
+FSRA~\cite{dai2022fsra}                & ViT-S      & 84.51 & 86.71 & 88.45 & 83.37 \\
+MCCG~\cite{shen2024mccg}               & ConvNeXt-T & 89.64 & 91.32 & 94.30 & 89.39 \\
+Sample4Geo~\cite{deuser2023sample4geo} & ConvNeXt-B & 92.65 & 93.81 & 95.14 & 91.39 \\
+Game4Loc~\cite{ji2024game4loc}         & ConvNeXt-B & 91.32 & 92.56 & 94.43 & 90.83 \\
+\midrule
+\textbf{Ours} & Swin-B & \textbf{94.52} & \textbf{95.44} & \textbf{96.86} & \textbf{93.83} \\
+\textbf{Ours} & ConvNeXt-T & 82.08 & 84.69 & 92.44 & 80.38 \\
+\textbf{Ours} & ConvNeXt-B & 90.91 & 92.44 & 95.72 & 90.32 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+% ── DenseUAV state-of-the-art comparison ──────────────────────────────────────
+\begin{table}[htbp]
+\caption{Comparison with state-of-the-art on DenseUAV (drone$\to$satellite).
+         SDM@1 is the DenseUAV spatial-distance metric.
+         Comparison values as reported in~\cite{xu2025ceusp} and the
+         original papers.}
+\label{tab:soa_denseuav}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l l c ccc}
+\toprule
+Method & Backbone & Params & R@1 & R@5 & SDM@1 \\
+\midrule
+DenseUAV baseline~\cite{dai2024denseuav}    & ViT-S      & $\sim$22\,M & 83.01 & 95.58 & 86.50 \\
+Sample4Geo~\cite{deuser2023sample4geo}      & ConvNeXt-B & 87.6\,M     & 49.38 & 78.29 & 61.72 \\
+MCCG~\cite{shen2024mccg}                     & ConvNeXt-T & $\sim$28\,M & 83.14 & 93.39 & 85.94 \\
+CAMP~\cite{wu2024camp}\textsuperscript{$\diamond$}                        & ConvNeXt-B & 91.4\,M     & 88.72 & --    & --    \\
+CEUSP~\cite{xu2025ceusp}\textsuperscript{$\star$}         & ConvNeXt-T & $\sim$28\,M & 89.45 & 96.05 & \textbf{91.01} \\
+\midrule
+\textbf{Ours}\textsuperscript{\S}                & Swin-B & $\sim$88\,M & 86.62 & 96.83 & 89.50 \\
+\textbf{Ours + VQ re-rank}\textsuperscript{\S\P} & Swin-B & $\sim$88\,M & 88.55 & 96.61 & --\textsuperscript{\dag} \\
+\textbf{Ours}\textsuperscript{\S\ddag}                & ConvNeXt-T & $\sim$28\,M & 82.41 & 94.59 & 85.83 \\
+\textbf{Ours + VQ re-rank}\textsuperscript{\S\P\ddag} & ConvNeXt-T & $\sim$28\,M & \textbf{91.89} & \textbf{96.83} & --\textsuperscript{\dag} \\
+\textbf{Ours}\textsuperscript{\S\#}                & ConvNeXt-B & $\sim$89\,M & 84.56 & 95.02 & 87.45 \\
+\textbf{Ours + VQ re-rank}\textsuperscript{\S\P\#} & ConvNeXt-B & $\sim$89\,M & 91.29 & 96.48 & --\textsuperscript{\dag} \\
+\bottomrule
+\end{tabular}}
+
+\vspace{2pt}
+{\footnotesize
+\textsuperscript{\ddag}\,Selected ConvNeXt-T checkpoint (epoch 25 of
+fine-tuning from a 20-epoch config-sweep winner: lr=$3\times10^{-4}$, last 3
+backbone stages unfrozen); later checkpoints were evaluated and regressed,
+so this checkpoint is the final reported model.\\
+\textsuperscript{$\star$}\,CEUSP reports results at $256\times256$ input
+(ours: $384\times384$); at the time of writing, no public code or pretrained
+weights were available for CEUSP, so its numbers could not be independently
+verified.\\
+\textsuperscript{$\diamond$}\,CAMP's DenseUAV figure is taken from CEUSP's
+comparison table~\cite{xu2025ceusp}; CAMP's own paper evaluates
+University-1652 and SUES-200 only and reports no DenseUAV results, so R@5
+and SDM@1 are unavailable.\\
+\textsuperscript{\S}\,Same-area retrieval, exact location-ID hit over the full
+18{,}198-tile confusion gallery (single pass) — the same hit criterion used for
+the other rows in this table. Also reports R@10\,$=98.63$ and mAP\,$=77.25$.\\
+\textsuperscript{\P}\,With the vector-quantized semantic re-ranking stage of
+Section~\ref{sec:vq_rerank} applied to the coarse top-10 (also reports
+R@10\,$=98.63$ and mAP\,$=78.69$).\\
+\textsuperscript{\dag}\,SDM (spatial-distance metric) not separately computed
+for the re-ranked ordering.\\
+\textsuperscript{\#}\,Selected ConvNeXt-B checkpoint (epoch 25 of a chunked
+training chain from ImageNet, transplanted recipe lr=$2\times10^{-4}$, last 3
+backbone stages unfrozen); per-epoch selection used a lighter-weight
+monitoring eval (R@1 76.53 / 80.44 / 81.25 / 85.16 / 87.22 at epochs
+5/10/15/20/25, epoch 30 regressed to 86.83) to pick the checkpoint cheaply,
+so this trajectory is not directly comparable to the table's row, which
+re-evaluates the selected epoch-25 checkpoint under the same official
+protocol as the Swin-B and ConvNeXt-T rows -- the same epoch-25-peak pattern
+observed for ConvNeXt-T. Also reports R@10\,$=97.85$, mAP\,$=73.39$ (coarse)
+and R@10\,$=97.85$, mAP\,$=77.71$ (VQ re-rank).}
+\end{table}
+
+The most important training diagnostic is the anchor-positive same-cluster
+probability. This value measures whether the descriptor places paired
+cross-source crops into the same K-means region. The cluster-consistency loss,
+variance loss, and same-cluster negative similarity provide direct feedback on
+whether the routing descriptor is both stable and discriminative.
+
+\section{Limitations}
+The training pairs are generated from co-registered GeoTIFF crops with shared
+ground geometry and therefore do not fully model oblique UAV-to-satellite
+viewpoint changes. The frozen backbone
+reduces training cost and stabilizes descriptors but may limit adaptation to
+domain-specific imagery. The K-means clustering step may remain
+expensive for very large maps, although tile images, embeddings, and cluster
+data are cached. Finally, evaluation uses an IoU $\geq 0.39$ hit criterion
+following Game4Loc; future work could complement this with stricter
+localization accuracy thresholds such as sub-10 m error rates.
+
+\section{Conclusion}
+This paper presented a cluster-routed descriptor method for UAV
+cross-view localization. The raw L2-normalized output of a pretrained
+backbone (Swin-B, or ConvNeXt-T for a $3\times$ smaller model), fine-tuned
+through its last stages, serves as a single descriptor for learned routing,
+candidate scoring, and — centrally — cluster-structured hard-negative mining:
+negatives drawn from a query's own and nearest clusters, with co-positive
+exclusion, concentrate the contrastive signal on visually repetitive
+look-alike regions. The training pipeline
+combines paired InfoNCE, cluster-consistency learning, variance
+regularization, and same-cluster hard-negative suppression, while the
+evaluation pipeline performs scalable
+coarse-to-fine search over a Game4Loc multi-zoom tile gallery with an
+optional vector-quantized semantic re-ranking stage. The method provides
+an operational foundation for UAV localization experiments with explicit
+cluster monitoring, checkpoint-aware cached evaluation,
+and query-level qualitative analysis.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
+

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv*/
+
+# Editors / tooling
+.vscode/
+.claude/
+
+# Checkpoints and caches (large binaries; not tracked)
+checkpoints/
+ckpt_cache/
+gallery_feat_cache/
+vq_rerank_cache/
+*.pt
+
+# GUI runtime settings and generated history logs
+*_settings.json
+*_history.json
+*_history.html
+last_remote_run.json
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.synctex.gz
+paper/*.fdb_latexmk
+paper/*.fls
+paper/build_check.log
