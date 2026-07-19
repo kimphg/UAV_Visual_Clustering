@@ -82,6 +82,16 @@ Full method details, all losses, and every experimental protocol are in
 Full tables (all compared methods, both SUES-200 gallery conventions,
 per-altitude breakdowns) are in the paper.
 
+## Datasets & leaderboards
+
+| Dataset | Official repository |
+|---|---|
+| DenseUAV | [Dmmm1997/DenseUAV](https://github.com/Dmmm1997/DenseUAV) |
+| SUES-200 | [Reza-Zhu/SUES-200-Benchmark](https://github.com/Reza-Zhu/SUES-200-Benchmark) |
+| University-1652 | [layumi/University1652-Baseline](https://github.com/layumi/University1652-Baseline) (README includes the official leaderboard) |
+| GTA-UAV / Game4Loc | [Yux1angJi/GTA-UAV](https://github.com/Yux1angJi/GTA-UAV) |
+| UAV-VisLoc | [IntelliSensing/UAV-VisLoc](https://github.com/IntelliSensing/UAV-VisLoc) |
+
 ## Repository layout
 
 | File | Role |
