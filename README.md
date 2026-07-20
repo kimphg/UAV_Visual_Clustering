@@ -97,6 +97,19 @@ per-altitude breakdowns) are in the paper.
 | GTA-UAV / Game4Loc | [Yux1angJi/GTA-UAV](https://github.com/Yux1angJi/GTA-UAV) |
 | UAV-VisLoc | [IntelliSensing/UAV-VisLoc](https://github.com/IntelliSensing/UAV-VisLoc) |
 
+## Compared methods
+
+| Method | Paper | Code |
+|---|---|---|
+| DenseUAV baseline | [Dai et al., TIP 2024](https://doi.org/10.1109/TIP.2023.3346279) | [Dmmm1997/DenseUAV](https://github.com/Dmmm1997/DenseUAV) |
+| Sample4Geo | [Deuser et al., ICCV 2023](https://arxiv.org/abs/2303.11851) | [Skyy93/Sample4Geo](https://github.com/Skyy93/Sample4Geo) |
+| Game4Loc | [Ji et al., 2024](https://arxiv.org/abs/2409.16925) | [Yux1angJi/GTA-UAV](https://github.com/Yux1angJi/GTA-UAV) |
+| MCCG | [Shen et al., TCSVT 2024](https://doi.org/10.1109/TCSVT.2023.3296074) | [mode-str/crossview](https://github.com/mode-str/crossview) |
+| CAMP | [Wu et al., TGRS 2024](https://ieeexplore.ieee.org/document/10644040) | [Mabel0403/CAMP](https://github.com/Mabel0403/CAMP) |
+| CEUSP | [Xu et al., PRCV 2025](https://arxiv.org/abs/2502.11408) | no public code/weights at time of writing |
+| DAC | [Xia et al., TCSVT 2024](https://doi.org/10.1109/TCSVT.2024.3443510) | [SummerpanKing/DAC](https://github.com/SummerpanKing/DAC) |
+| MEAN | [Chen et al., TGRS 2025](https://arxiv.org/abs/2412.14819) | [ISChenawei/MEAN](https://github.com/ISChenawei/MEAN) |
+
 ## Repository layout
 
 | File | Role |
