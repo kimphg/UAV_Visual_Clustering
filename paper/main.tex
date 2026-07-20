@@ -144,8 +144,34 @@ or 3D reference map \cite{liu2024review}. In contrast to relative visual
 odometry, these methods aim to produce a global position estimate by anchoring
 the observation to an external map.
 
-Within the last three years, many learning-based UAV absolute localization
-methods have adopted a retrieval-and-refinement paradigm. GLVL introduced a
+Early systems performed this matching with classic, handcrafted local
+features. Conte and Doherty registered onboard UAV video directly against a
+georeferenced aerial image using local feature correspondences and
+homography estimation, fusing the resulting position with inertial and
+visual-odometry sensors to bound long-term drift \cite{conte2008integrated}.
+Such approaches require no training data and integrate naturally with
+classical filtering, but the underlying descriptors are fixed and
+photometric: they degrade under seasonal, illumination, and viewpoint
+differences between the UAV and reference imagery, and they struggle in
+low-texture regions such as fields or water where few reliable keypoints
+exist.
+
+Convolutional neural networks (CNNs) later replaced handcrafted descriptors
+with learned representations trained to be more invariant to the UAV-satellite
+domain gap. Goforth and Lucey localized a UAV against pre-existing satellite
+imagery by aligning CNN feature maps between the two views, jointly
+optimizing consistency across adjacent UAV frames and the satellite
+reference to improve accuracy \cite{goforth2019gpsdenied}. This moved the
+matching signal from fixed gradient-based descriptors to representations
+learned from data, but still framed localization as direct image-to-map
+alignment rather than large-scale embedding retrieval, limiting scalability
+to maps far larger than the immediate registration window.
+
+More recently, deep-network retrieval has replaced direct image alignment as
+the dominant paradigm, reframing localization as embedding-space search over
+a large reference gallery rather than pairwise registration. Many such
+learning-based UAV absolute localization methods have adopted a
+retrieval-and-refinement paradigm. GLVL introduced a
 global-local design in which a large-scale retrieval module first identifies a
 similar map region and a fine-grained matching module then estimates a more
 precise UAV coordinate \cite{li2023glvl}. This formulation is related to the
@@ -161,16 +187,6 @@ changes, altitude variation, and dense candidate galleries. DenseUAV also
 reports both retrieval and distance-sensitive evaluation, making it an
 important reference point for UAV localization accuracy.
 
-Scale-aware UAV-to-satellite localization has recently been studied by
-Ye et al., who estimate absolute query scale from semantic anchors such as
-small vehicles and use the recovered metric scale to adapt satellite crop size
-before retrieval \cite{ye2026scaleaware}, evaluating robustness on augmented
-DenseUAV and UAV-VisLoc settings. Such explicit scale recovery depends on
-reference objects being visible and correctly detected, which scenes dominated
-by fields, water, or vegetation may not satisfy; the present work instead
-relies on the retrieval descriptor itself, trained with structured hard
-negatives, to separate visually similar candidates.
-
 Recent alternatives also explore visual-inertial absolute positioning
 \cite{tong2025rtapm}, vector-map localization \cite{hao2025vecmaploc}, and
 multi-view visual indexing from rendered references \cite{li2025viewpoint}.
@@ -178,44 +194,54 @@ These approaches broaden the absolute-localization setting beyond pure
 satellite-image retrieval, although they typically require additional sensor
 streams, map modalities, or reference rendering pipelines.
 
-\subsection{Vision Transformers for Image Retrieval}
+\subsection{Vision Transformers and Cross-View Retrieval Architectures}
 Vision Transformer (ViT) models replaced fixed convolutional receptive fields
 with self-attention over image patches, allowing descriptors to aggregate
 long-range spatial context directly from token interactions
-\cite{dosovitskiy2021vit}. This property is attractive for image retrieval,
-where two images may share large-scale layout while differing in viewpoint,
-scale, illumination, or local appearance. Early transformer retrieval studies
-showed that ViT backbones can be optimized with metric-learning objectives and
-entropy regularization to produce compact global descriptors for instance-level
-image retrieval \cite{el2021vitretrieval}. Compared with CNN descriptors,
-transformer descriptors can represent relationships between distant structures,
-which is useful for aerial scenes containing roads, field boundaries, rooftops,
-and shoreline patterns.
+\cite{dosovitskiy2021vit}, and early transformer retrieval studies showed
+that ViT backbones optimized with metric-learning objectives produce compact,
+discriminative global descriptors \cite{el2021vitretrieval}.
+Self-supervised pretraining strengthened this direction: DINO and DINOv2
+learn features with strong semantic organization that transfer across image
+distributions without task-specific labels
+\cite{caron2021dino,oquab2023dinov2}, and AnyLoc showed such
+foundation-model features generalize across viewpoints and environments in
+visual place recognition \cite{keetha2023anyloc}. These results motivate
+using a strong pretrained backbone as a stable feature extractor and
+adapting it to the target localization objective, as done in this work.
 
-Self-supervised transformer pretraining further strengthened the use of ViT
-features for retrieval. DINO showed that self-supervised ViTs learn features
-with strong semantic organization and attention maps that often localize
-salient regions without explicit segmentation supervision
-\cite{caron2021dino}. DINOv2 extended this direction by training robust
-general-purpose visual features that transfer across image distributions and
-tasks without task-specific labels \cite{oquab2023dinov2}. In visual place
-recognition, AnyLoc demonstrated that foundation-model features, particularly
-DINO and DINOv2 descriptors aggregated with VLAD, can generalize across
-viewpoints, domains, and environments without dataset-specific fine-tuning
-\cite{keetha2023anyloc}. These results motivate using a strong pretrained
-transformer backbone as a stable feature extractor, while adapting lightweight
-heads for the target UAV localization objective.
+Applied directly to cross-view geo-localization, EgoTR modeled global
+dependencies between street-view and aerial imagery with an evolving
+transformer \cite{zhu2021egotr}, and TransGeo argued that a
+transformer-only architecture can replace handcrafted cross-view alignment
+operations by letting attention emphasize discriminative regions
+\cite{zhu2022transgeo}. Attention thus allows image regions to be compared
+through global context rather than only local convolutional patterns.
 
-Transformer models have also been applied directly to cross-view
-geo-localization. EgoTR introduced an evolving transformer formulation to model
-global dependencies between street-view and aerial imagery
-\cite{zhu2021egotr}. TransGeo later argued that a transformer-only
-architecture can replace several handcrafted cross-view alignment operations
-by using attention to emphasize discriminative regions and suppress invalid
-patches \cite{zhu2022transgeo}. These methods illustrate why transformer
-attention is relevant to cross-view retrieval: the model can compare image
-regions through global context rather than relying only on local convolutional
-patterns.
+The strongest methods in our experimental comparison
+(Tables~\ref{tab:soa_sues200}--\ref{tab:soa_denseuav}) build on these
+backbones with explicit part- or region-level supervision. LPN partitions
+the feature map into square-ring parts around the image center and
+supervises each part separately, showing that surrounding context — not
+only the central target — carries localization signal \cite{wang2021lpn}.
+FSRA carries this idea to transformers: it ranks ViT tokens by activation
+strength, segments them into semantic region groups, and aligns
+corresponding regions across views, improving robustness to position and
+scale shifts \cite{dai2022fsra}. CAMP combines a position-aware partition
+branch, which captures fine-grained part features together with their
+spatial arrangement, with a contrastive attributes mining strategy that
+exploits attribute-level positives and negatives \cite{wu2024camp}. CEUSP,
+the strongest published DenseUAV method, augments a compact ConvNeXt
+backbone with a Rubik's-Cube attention module that rotates feature maps to
+integrate multi-directional context, context-aware channel integration, and
+a dynamic negative-sampling strategy \cite{xu2025ceusp}. A parallel
+contrastive-sampling line — Sample4Geo, MCCG, DAC, and MEAN — is discussed
+with the metric-learning literature below. Common to all these methods is
+that discrimination among look-alike candidates is improved by supervising
+\emph{where} content sits, not only what it is; the proposed pipeline
+pursues the same goal through cluster-structured hard-negative mining on a
+single pooled descriptor, plus an optional vector-quantized layout
+re-ranking stage, rather than through per-part heads or alignment losses.
 
 \subsection{Drone-Satellite Localization Challenges}
 Drone-satellite localization is harder than standard image retrieval because
@@ -274,6 +300,10 @@ retrieval must handle both scale changes and partial map overlap.
 \toprule
 Dataset & Reference setting & Main variation & Task form \\
 \midrule
+University-1652 \cite{zheng2020university1652} &
+Paired drone, satellite, and street-view images per building &
+Multi-view supervision (drone/satellite/street) with synthetic multi-view drone rendering &
+Closed-gallery multi-view retrieval \\
 SUES-200 \cite{zhu2023sues} &
 Paired drone and satellite views &
 Multiple UAV flight heights &
@@ -383,6 +413,28 @@ imperfect overlapping matches \cite{li2025onetomany}. These studies indicate
 that hard-negative mining, multi-positive supervision, and overlap-aware
 objectives are important for cross-view UAV localization.
 
+A separate line of work strengthens the Sample4Geo/MCCG contrastive baseline
+with additional spatial-feature supervision rather than sampling changes alone.
+MCCG splits the backbone's spatial feature map into heatmap-ranked blocks and
+applies part-level contrastive matching in addition to the global descriptor
+objective \cite{shen2024mccg}. DAC builds directly on this codebase and adds a
+domain/scene-alignment loss that matches flattened drone and satellite feature
+maps across views, together with a distributionally-robust hard-negative
+reweighting objective that penalizes difficult negative pairs more heavily
+than plain InfoNCE \cite{xia2024dac}. MEAN extends the same design with a
+combined cosine-similarity-and-MSE multilevel alignment loss for consistency
+and invariance learning across viewpoints, while reusing DAC's hard-negative
+reweighting objective, and reports the strongest published SUES-200 and
+University-1652 numbers to date at a compact 36.5\,M-parameter ConvNeXt-Tiny
+size \cite{chen2025mean}. Both methods indicate that supervising alignment at
+the spatial-feature level, not only on the pooled global descriptor, is an
+effective way to improve cross-view retrieval accuracy. The present work
+instead supervises spatial structure only indirectly, through
+cluster-consistency regularization on the pooled descriptor and structured
+hard-negative mining, without an explicit spatial-feature alignment loss;
+Section~\ref{sec:limitations} and the per-method comparison tables discuss
+this trade-off further.
+
 \subsection{Coarse-to-Fine Retrieval and Clustered Search}
 Large-map localization is often too expensive to solve by exhaustive
 fine-grained matching over every possible crop. Coarse-to-fine retrieval
@@ -458,41 +510,65 @@ ranking is performed only over the candidate tiles in those clusters.
 
 \section{Training Data}
 \label{sec:training_data}
-The system is trained with a cross-view drone-to-satellite (D2S) supervision
-signal. Two complementary datasets are used.
+All models are trained with a cross-view drone-to-satellite (D2S)
+supervision signal: each training sample pairs a UAV image with a satellite
+crop of the same location, optionally carrying a continuous positive weight
+consumed by the weighted InfoNCE objective. Every benchmark result reported
+in this paper comes from a model trained, or fine-tuned, on that benchmark's
+own official training split only — test locations are never seen during
+training. Five training sources are used.
 
-\paragraph{UAV-VisLoc with Game4Loc-style pairing.}
-The primary training source is the UAV-VisLoc dataset \cite{xu2024uavvisloc},
-processed using the Game4Loc tiling protocol \cite{ji2024game4loc}.
-A pre-tiled satellite pyramid at four zoom levels serves as the gallery.
-For each drone image, positive tiles are identified by geographic overlap:
-a tile qualifies as a strong positive when its intersection-over-union (IoU)
-with the drone footprint is $\geq 0.39$, and as a semi-positive when IoU
-$\geq 0.14$. Semi-positives enter training with their IoU value as a
-continuous weight for the weighted InfoNCE loss, providing a softer supervision
-signal for partially overlapping views.
-Training pairs are stored in a Game4Loc-format JSON file and loaded
-with the \texttt{pos\_semipos} mode. The footprint for each drone image is
-computed from altitude and heading metadata in the accompanying CSV files,
-using a camera model with $\text{FOV}_H = 36^\circ$ and
-$\text{FOV}_V = 52^\circ$.
-This setup provides real D2S training signal
-over diverse terrain with authentic sensor appearance differences.
+\paragraph{DenseUAV.}
+The DenseUAV training split \cite{dai2024denseuav} contains 2,256 locations,
+each with drone images captured at 80, 90, and 100\,m altitude and one
+satellite tile per altitude. Training uses cross-altitude multi-positive
+pairing: every drone image is paired with the same location's satellite tile
+at \emph{all three} altitudes — all valid views of the same place — giving
+nine pairs per location (20,304 pairs in total). Cross-altitude pairs are
+softened by an altitude-gap weight $w=\exp(-|\Delta \mathrm{alt}|/\tau)$
+with $\tau=30$\,m, so same-altitude pairs remain hard positives ($w{=}1$)
+while $10$ and $20$\,m gaps receive $w{\approx}0.72$ and $0.51$.
+Per-location GPS metadata is additionally loaded to exclude geographically
+adjacent locations from the hard-negative pool.
+
+\paragraph{SUES-200.}
+The official 120-location training split of SUES-200 \cite{zhu2023sues}
+provides drone images at four flight heights (150--300\,m), 50 images per
+height per location, and one satellite image per location — 24,000 pairs,
+all full-strength positives. The 80 test locations are held out entirely.
 
 \paragraph{University-1652.}
-The University-1652 dataset \cite{zheng2020university1652} provides a
-controlled building geo-localization benchmark with 701 training locations
-across a university campus. Each location is represented by approximately
-54 drone images taken from multiple viewpoints and altitudes, paired with a
-single overhead satellite image. All drone images from the same location share
-the satellite image as their positive, yielding approximately 37\,800
-training pairs. University-1652 complements VisLoc training with diverse
-viewpoints, multi-building urban scenes, and a fixed overhead satellite
-perspective, improving robustness to altitude variation.
+The University-1652 training split \cite{zheng2020university1652} covers 701
+buildings, each with $\sim$54 synthetic drone views and one satellite image.
+Ten drone views are sampled per building per run, giving 7,010 pairs; all
+drone views of a building share its satellite image as a full-strength
+positive.
+
+\paragraph{GTA-UAV (Game4Loc).}
+The GTA-UAV same-area training metadata \cite{ji2024game4loc} is loaded in
+the official \texttt{pos\_semipos} mode: each drone image is paired with
+every positive (IoU $\geq 0.39$) and semi-positive (IoU $\geq 0.14$)
+satellite tile listed for it, with each pair's overlap-derived value used
+as its positive weight. The $\sim$27,000 same-area training drone images
+expand to 123,095 weighted pairs under this scheme — the largest training
+source used.
+
+\paragraph{UAV-VisLoc with Game4Loc-style pairing.}
+For the UAV-VisLoc experiments, the dataset \cite{xu2024uavvisloc} is
+processed with the same Game4Loc tiling protocol \cite{ji2024game4loc}: a
+pre-tiled satellite pyramid at four zoom levels serves as the gallery, and
+for each drone image positive tiles are identified by geographic overlap
+against the drone footprint (strong positive at IoU $\geq 0.39$,
+semi-positive at IoU $\geq 0.14$, entering training with the IoU value as
+its weight). The footprint is computed from altitude and heading metadata in
+the per-sequence CSV files using a camera model with
+$\text{FOV}_H = 36^\circ$ and $\text{FOV}_V = 52^\circ$. This source
+provides real D2S signal over diverse terrain with authentic sensor
+appearance differences.
 
 \paragraph{Training transform.}
-All training images are resized to the backbone input size
-($224\times224$ for Swin-T, $384\times384$ for Swin-B).
+All training images are resized to the backbone input size ($384\times384$
+for Swin-B, ConvNeXt-T, and ConvNeXt-B).
 Augmentation includes color jitter, Gaussian blur or sharpening,
 random cardinal rotation, JPEG compression simulation, and coarse dropout.
 Random resized cropping is omitted to avoid removing overlapping content
@@ -1220,11 +1296,12 @@ bounds are evaluated. If enabled, query orientation metadata can be used as a
 preprocessing correction before model inference; otherwise the query is
 embedded directly and scored against the selected map-tile candidates.
 
-\subsection{Metric}
-Evaluation follows the Game4Loc IoU-based matching protocol
-\cite{ji2024game4loc}.
-A retrieved tile $m_j$ is counted as a hit for query $q_i$ if and only if it
-is a positive tile under the criterion defined in Section~\ref{sec:eval}:
+\subsection{Metrics}
+Two hit conventions are used, one per benchmark family. On the open-map
+benchmarks (UAV-VisLoc and GTA-UAV), evaluation follows the Game4Loc
+IoU-based matching protocol \cite{ji2024game4loc}: a retrieved tile $m_j$
+is counted as a hit for query $q_i$ if and only if it is a positive tile
+under the criterion defined in Section~\ref{sec:eval}:
 \begin{equation}
   \mathrm{hit}(q_i, m_j) =
   \begin{cases}
@@ -1262,6 +1339,16 @@ reports \texttt{sdm\_at\_1} and \texttt{sdm\_at\_k}. It also reports
 meters for the top-1 result and the top-$K$ retrieved set. Query throughput is
 reported as FPS after cached map preprocessing.
 
+On the closed-gallery benchmarks, the hit criterion is instead an exact
+identity match: a retrieved tile of the query's location ID on DenseUAV, or
+of the query's class on SUES-200 and University-1652. Recall@K and AP are
+computed from these binary labels with the same formulas, with two
+benchmark-specific conventions preserved: University-1652 follows its
+official evaluator's distractor and junk-image handling and AP computation,
+and DenseUAV additionally reports SDM@K — the distance-weighted metric it
+introduced \cite{dai2024denseuav}, computed from the GPS coordinates of the
+retrieved locations.
+
 \section{Implementation Details}
 The implementation is written in Python using PyTorch, \texttt{timm}, FAISS,
 rasterio, matplotlib, OpenCV, Kornia, and PyQt5. CUDA and automatic mixed
@@ -1288,23 +1375,19 @@ Query-level inspection reports the original UAV image, the matched crop, the
 top-$K$ matching crop when applicable, and the crop nearest to ground truth.
 
 \section{Experimental Protocol}
-The primary evaluation dataset is UAV-VisLoc \cite{xu2024uavvisloc}.
-Evaluation applies the Game4Loc tiling and matching protocol directly to the
-UAV-VisLoc satellite maps and drone sequences: the pre-tiled gallery
-($256\times256$ px, four zoom levels per area) is embedded and clustered,
-query images are matched against cluster candidates, and hits are identified
-by the Game4Loc IoU criterion (IoU $\geq 0.39$ or tile recall $\geq 0.80$).
-Altitude and heading metadata are read from the per-sequence CSV file to
-compute drone footprints for IoU evaluation.
-Table~\ref{tab:config} summarizes the evaluation configuration.
-
-UAV-VisLoc is chosen as the primary evaluation benchmark because it provides
-large georeferenced satellite maps, realistic UAV imagery with pose metadata
-(altitude, heading), diverse terrains, and multiple areas — matching the
-intended operating condition of the proposed pipeline. Applying the Game4Loc
-protocol to UAV-VisLoc aligns hit labelling, gallery structure, and reported
-metrics with the Game4Loc standard while evaluating on a real-world dataset
-rather than a synthetic game engine environment.
+The method is evaluated on five benchmarks, grouped into two protocol
+families. The \emph{open-map} family applies the Game4Loc tiling and
+matching protocol \cite{ji2024game4loc}: UAV-VisLoc
+\cite{xu2024uavvisloc}, whose large georeferenced maps, pose metadata, and
+diverse real terrain match the intended operating condition of the proposed
+pipeline, and GTA-UAV, evaluated with Game4Loc's own metadata and evaluator
+conventions. The \emph{closed-gallery} family follows each benchmark's
+official evaluator — DenseUAV, SUES-200, and University-1652 — enabling
+direct comparison against published state-of-the-art numbers
+(Tables~\ref{tab:soa_sues200}--\ref{tab:soa_denseuav}). In every case the
+evaluated model is the one trained on that benchmark's own official
+training split (Section~\ref{sec:training_data}).
+Table~\ref{tab:config} summarizes the shared evaluation configuration.
 
 \subsection{Game4Loc Evaluation Protocol Applied to UAV-VisLoc}
 The Game4Loc evaluation protocol is applied as follows.
@@ -1327,6 +1410,40 @@ Game4Loc trains on GTA-UAV synthetic drone-to-satellite pairs, the proposed
 system trains on real UAV-VisLoc D2S pairs (using the same Game4Loc tiling
 protocol) as described in Section~\ref{sec:training_data}. The evaluation
 protocol, gallery structure, and metrics are identical to Game4Loc.
+
+\subsection{GTA-UAV Protocol}
+GTA-UAV itself is evaluated with Game4Loc's own evaluator conventions on
+the same-area split: the gallery is the single flat set of all satellite
+tiles across the four zoom levels, with no per-area or per-zoom masking;
+queries are the test drone images with at least one positive tile; and only
+the metadata's positive list (IoU $\geq 0.39$) counts as a hit, even though
+training also uses semi-positives. Tile centre coordinates for the distance
+metrics are recovered from the tile naming convention exactly as in the
+official evaluator, and Recall@K, AP, SDM@K, and Dis@K follow the official
+formulas.
+
+\subsection{DenseUAV Protocol}
+DenseUAV is evaluated on its official test split: 2,331 drone queries
+(777 held-out locations at three altitudes) are scored against the full
+18,198-tile satellite gallery in a single pass, with a hit defined as
+retrieving a tile of the query's exact location ID. Recall@K, AP, and
+DenseUAV's spatial distance metric SDM@K are reported.
+
+\subsection{SUES-200 Protocol}
+SUES-200 uses the official 120/80 train/test location split: 16,000 test
+queries (80 locations $\times$ 4 altitudes $\times$ 50 images) are
+evaluated per altitude against the 80 test locations' satellite tiles — the
+gallery convention used by the published comparisons — and additionally
+against the harder all-200-tile confusion gallery in which the training
+locations' tiles act as distractors (Table~\ref{tab:sues200_detail}).
+
+\subsection{University-1652 Protocol}
+University-1652 is evaluated in both directions from a single set of
+weights: drone$\to$satellite ($\sim$37,855 drone queries against the
+951-image satellite gallery, distractors included) and
+satellite$\to$drone (701 satellite queries against $\sim$51,355 drone
+images). Distractor and junk handling and the AP computation follow the
+official benchmark evaluator.
 
 \begin{table}[htbp]
 \caption{Game4Loc Protocol Applied to UAV-VisLoc}
@@ -1507,7 +1624,8 @@ Seq. & Queries & R@1 & R@5 & AP & Median hit & Tile/stride \\
 % ── SUES-200 state-of-the-art comparison ─────────────────────────────────────
 \begin{table*}[htbp]
 \caption{Comparison with state-of-the-art on SUES-200 (Recall@1, \%, drone$\to$satellite).
-         SOTA values as reported in~\cite{li2025cvd}.
+         SOTA values as reported in~\cite{li2025cvd}, except
+         MEAN~\cite{chen2025mean} taken from its own paper.
          Ours: official 120/80 train/test location split, evaluated on the 80
          held-out test locations against their 80 satellite tiles — the same
          gallery convention used by the compared methods'
@@ -1525,8 +1643,10 @@ FSRA~\cite{dai2022fsra}                & ViT-S       & 78.70 & 85.65 & 88.95 & 9
 MCCG~\cite{shen2024mccg}               & ConvNeXt-T  & 79.96 & 85.01 & 90.47 & 94.20 \\
 Sample4Geo~\cite{deuser2023sample4geo} & ConvNeXt-B  & 94.75 & 96.75 & 97.25 & 97.20 \\
 Game4Loc~\cite{ji2024game4loc}        & ConvNeXt-B  & 94.62 & 96.55 & 97.55 & 97.67 \\
+MEAN~\cite{chen2025mean}               & ConvNeXt-T  & 95.50 & \textbf{98.38} & 98.95 & 99.17 \\
+DAC~\cite{xia2024dac}\textsuperscript{$\ddagger$}                & ConvNeXt-B  & \textbf{96.80} & 97.48 & 98.20 & 97.58 \\
 \midrule
-\textbf{Ours}\textsuperscript{\S} & Swin-B & \textbf{96.30} & \textbf{98.25} & \textbf{99.00} & 99.15 \\
+\textbf{Ours}\textsuperscript{\S} & Swin-B & 96.30 & 98.25 & \textbf{99.00} & 99.15 \\
 \textbf{Ours}\textsuperscript{\S,\dag} & ConvNeXt-T & 91.77 & 95.20 & 96.90 & 97.52 \\
 \textbf{Ours}\textsuperscript{\S,\dag} & ConvNeXt-B & 94.97 & 97.28 & 98.50 & \textbf{99.35} \\
 \bottomrule
@@ -1544,7 +1664,12 @@ the full per-altitude results for all models and gallery settings.\\
 \textsuperscript{\dag}\,ConvNeXt rows: the DenseUAV-trained epoch-25
 checkpoints (Table~\ref{tab:soa_denseuav}) fine-tuned on SUES-200's own
 official training split (lr=$1\times10^{-5}$, last 2 backbone stages
-unfrozen, 20 epochs) -- the same fine-tuning recipe used for the Swin-B row.
+unfrozen, 20 epochs) -- the same fine-tuning recipe used for the Swin-B row.\\
+\textsuperscript{$\ddagger$}\,DAC's SUES-200 numbers are taken from
+MEAN's~\cite{chen2025mean} comparison table; DAC's own paper was not
+accessed directly (paywalled, no preprint found) and its official
+repository's README includes no results table, though it does release
+trained checkpoints, unlike CEUSP.
 \end{table*}
 
 % ── SUES-200 detailed per-altitude results (ours) ─────────────────────────────
@@ -1606,7 +1731,10 @@ mAP      & \multicolumn{3}{c}{98.43} & \multicolumn{3}{c}{97.46} \\
          D$\!\to\!$S: drone query, satellite gallery ($\sim$37\,855 queries, 951 gallery).
          S$\!\to\!$D: satellite query, drone gallery (701 queries,
          $\sim$51\,355 gallery).
-         SOTA values from the official leaderboard~\cite{zheng2020university1652}.
+         SOTA values from the official leaderboard~\cite{zheng2020university1652},
+         except MEAN~\cite{chen2025mean} taken from its own paper and
+         DAC~\cite{xia2024dac}\textsuperscript{$\ddagger$} taken from MEAN's
+         comparison table (see Table~\ref{tab:soa_sues200} footnote for why).
          Ours: per backbone, one model fine-tuned on the official 701-class
          training split (the ConvNeXt rows start from their DenseUAV-trained
          checkpoints of Table~\ref{tab:soa_denseuav}, fine-tuned with
@@ -1630,8 +1758,10 @@ FSRA~\cite{dai2022fsra}                & ViT-S      & 84.51 & 86.71 & 88.45 & 83
 MCCG~\cite{shen2024mccg}               & ConvNeXt-T & 89.64 & 91.32 & 94.30 & 89.39 \\
 Sample4Geo~\cite{deuser2023sample4geo} & ConvNeXt-B & 92.65 & 93.81 & 95.14 & 91.39 \\
 Game4Loc~\cite{ji2024game4loc}         & ConvNeXt-B & 91.32 & 92.56 & 94.43 & 90.83 \\
+MEAN~\cite{chen2025mean}               & ConvNeXt-T & 93.55 & 94.53 & 96.01 & 92.08 \\
+DAC~\cite{xia2024dac}\textsuperscript{$\ddagger$}                & ConvNeXt-B & \textbf{94.67} & \textbf{95.50} & 96.43 & 93.79 \\
 \midrule
-\textbf{Ours} & Swin-B & \textbf{94.52} & \textbf{95.44} & \textbf{96.86} & \textbf{93.83} \\
+\textbf{Ours} & Swin-B & 94.52 & 95.44 & \textbf{96.86} & \textbf{93.83} \\
 \textbf{Ours} & ConvNeXt-T & 82.08 & 84.69 & 92.44 & 80.38 \\
 \textbf{Ours} & ConvNeXt-B & 90.91 & 92.44 & 95.72 & 90.32 \\
 \bottomrule
@@ -1709,6 +1839,7 @@ variance loss, and same-cluster negative similarity provide direct feedback on
 whether the routing descriptor is both stable and discriminative.
 
 \section{Limitations}
+\label{sec:limitations}
 The training pairs are generated from co-registered GeoTIFF crops with shared
 ground geometry and therefore do not fully model oblique UAV-to-satellite
 viewpoint changes. The frozen backbone

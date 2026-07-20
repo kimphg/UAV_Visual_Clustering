@@ -52,6 +52,7 @@ Full method details, all losses, and every experimental protocol are in
 |---|---|---|---|---|---|
 | DenseUAV baseline | ViT-S | ~22M | 83.01 | 95.58 | 86.50 |
 | MCCG | ConvNeXt-T | ~28M | 83.14 | 93.39 | 85.94 |
+| CAMP | ConvNeXt-B | 91.4M | 88.72 | — | — |
 | CEUSP | ConvNeXt-T | ~28M | 89.45 | 96.05 | **91.01** |
 | **Ours** | Swin-B | ~88M | 86.62 | 96.83 | 89.50 |
 | **Ours + VQ re-rank** | Swin-B | ~88M | 88.55 | 96.61 | — |
@@ -66,7 +67,9 @@ Full method details, all losses, and every experimental protocol are in
 |---|---|---|---|---|---|
 | Sample4Geo | ConvNeXt-B | 94.75 | 96.75 | 97.25 | 97.20 |
 | Game4Loc | ConvNeXt-B | 94.62 | 96.55 | 97.55 | 97.67 |
-| **Ours** | Swin-B | **96.30** | **98.25** | **99.00** | 99.15 |
+| MEAN | ConvNeXt-T | 95.50 | **98.38** | 98.95 | 99.17 |
+| DAC | ConvNeXt-B | **96.80** | 97.48 | 98.20 | 97.58 |
+| **Ours** | Swin-B | 96.30 | 98.25 | **99.00** | 99.15 |
 | **Ours** | ConvNeXt-T | 91.77 | 95.20 | 96.90 | 97.52 |
 | **Ours** | ConvNeXt-B | 94.97 | 97.28 | 98.50 | **99.35** |
 
@@ -75,7 +78,9 @@ Full method details, all losses, and every experimental protocol are in
 | Method | Backbone | D→S R@1 | D→S AP | S→D R@1 | S→D AP |
 |---|---|---|---|---|---|
 | Sample4Geo | ConvNeXt-B | 92.65 | 93.81 | 95.14 | 91.39 |
-| **Ours** | Swin-B | **94.52** | **95.44** | **96.86** | **93.83** |
+| MEAN | ConvNeXt-T | 93.55 | 94.53 | 96.01 | 92.08 |
+| DAC | ConvNeXt-B | **94.67** | **95.50** | 96.43 | 93.79 |
+| **Ours** | Swin-B | 94.52 | 95.44 | **96.86** | **93.83** |
 | **Ours** | ConvNeXt-T | 82.08 | 84.69 | 92.44 | 80.38 |
 | **Ours** | ConvNeXt-B | 90.91 | 92.44 | 95.72 | 90.32 |
 
@@ -201,5 +206,5 @@ Released under the [MIT License](LICENSE).
 ## Acknowledgments
 
 This work builds on and compares against DenseUAV, SUES-200, University-1652,
-Game4Loc/GTA-UAV, UAV-VisLoc, CEUSP, MCCG, CAMP, Sample4Geo, and other prior
-cross-view localization methods cited in the paper.
+Game4Loc/GTA-UAV, UAV-VisLoc, CEUSP, MCCG, CAMP, Sample4Geo, DAC, MEAN, and
+other prior cross-view localization methods cited in the paper.
