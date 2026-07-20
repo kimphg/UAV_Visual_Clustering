@@ -18,7 +18,7 @@
 
 \begin{document}
 
-\title{Cluster-Routed Descriptor Learning with Structured Hard-Negative Mining for UAV Cross-View Localization}
+\title{Cluster-Routed Hard-Negative Mining for UAV Cross-View Visual-Localization}
 
 \author{
 \IEEEauthorblockN{Kim-Phuong Phung}
@@ -1773,7 +1773,7 @@ DAC~\cite{xia2024dac}\textsuperscript{$\ddagger$}                & ConvNeXt-B & 
 \caption{Comparison with state-of-the-art on DenseUAV (drone$\to$satellite).
          SDM@1 is the DenseUAV spatial-distance metric.
          Comparison values as reported in~\cite{xu2025ceusp} and the
-         original papers.}
+         original papers, except MCCG~\cite{shen2024mccg}\textsuperscript{$\triangle$}.}
 \label{tab:soa_denseuav}
 \centering
 \footnotesize
@@ -1785,14 +1785,14 @@ Method & Backbone & Params & R@1 & R@5 & SDM@1 \\
 \midrule
 DenseUAV baseline~\cite{dai2024denseuav}    & ViT-S      & $\sim$22\,M & 83.01 & 95.58 & 86.50 \\
 Sample4Geo~\cite{deuser2023sample4geo}      & ConvNeXt-B & 87.6\,M     & 49.38 & 78.29 & 61.72 \\
-MCCG~\cite{shen2024mccg}                     & ConvNeXt-T & $\sim$28\,M & 83.14 & 93.39 & 85.94 \\
+MCCG~\cite{shen2024mccg}\textsuperscript{$\triangle$}        & ConvNeXt-T & $\sim$28\,M & 90.26 & \textbf{97.90} & \textbf{91.82} \\
 CAMP~\cite{wu2024camp}\textsuperscript{$\diamond$}                        & ConvNeXt-B & 91.4\,M     & 88.72 & --    & --    \\
-CEUSP~\cite{xu2025ceusp}\textsuperscript{$\star$}         & ConvNeXt-T & $\sim$28\,M & 89.45 & 96.05 & \textbf{91.01} \\
+CEUSP~\cite{xu2025ceusp}\textsuperscript{$\star$}         & ConvNeXt-T & $\sim$28\,M & 89.45 & 96.05 & 91.01 \\
 \midrule
 \textbf{Ours}\textsuperscript{\S}                & Swin-B & $\sim$88\,M & 86.62 & 96.83 & 89.50 \\
 \textbf{Ours + VQ re-rank}\textsuperscript{\S\P} & Swin-B & $\sim$88\,M & 88.55 & 96.61 & --\textsuperscript{\dag} \\
 \textbf{Ours}\textsuperscript{\S\ddag}                & ConvNeXt-T & $\sim$28\,M & 82.41 & 94.59 & 85.83 \\
-\textbf{Ours + VQ re-rank}\textsuperscript{\S\P\ddag} & ConvNeXt-T & $\sim$28\,M & \textbf{91.89} & \textbf{96.83} & --\textsuperscript{\dag} \\
+\textbf{Ours + VQ re-rank}\textsuperscript{\S\P\ddag} & ConvNeXt-T & $\sim$28\,M & \textbf{91.89} & 96.83 & --\textsuperscript{\dag} \\
 \textbf{Ours}\textsuperscript{\S\#}                & ConvNeXt-B & $\sim$89\,M & 84.56 & 95.02 & 87.45 \\
 \textbf{Ours + VQ re-rank}\textsuperscript{\S\P\#} & ConvNeXt-B & $\sim$89\,M & 91.29 & 96.48 & --\textsuperscript{\dag} \\
 \bottomrule
@@ -1808,6 +1808,15 @@ so this checkpoint is the final reported model.\\
 (ours: $384\times384$); at the time of writing, no public code or pretrained
 weights were available for CEUSP, so its numbers could not be independently
 verified.\\
+\textsuperscript{$\triangle$}\,MCCG's DenseUAV row is our own reproduction,
+not a secondhand figure: trained from the official released code
+\cite{shen2024mccg} for 199 epochs with the paper's stated recipe
+(lr=$0.01$, batch size 8, triplet-loss weight 0.3), evaluated under the same
+protocol as every other row in this table. This exceeds the DenseUAV R@1
+of 83.14 previously reported for MCCG via CEUSP's comparison table
+\cite{xu2025ceusp}; we could not find any stated reproduction methodology
+(epochs, learning rate, or whether official code was used) for that number,
+so we report our own independently verified result instead.\\
 \textsuperscript{$\diamond$}\,CAMP's DenseUAV figure is taken from CEUSP's
 comparison table~\cite{xu2025ceusp}; CAMP's own paper evaluates
 University-1652 and SUES-200 only and reports no DenseUAV results, so R@5

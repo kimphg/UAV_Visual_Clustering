@@ -1,6 +1,6 @@
 # UAV_Visual_Clustering
 
-**Cluster-Routed Descriptor Learning with Structured Hard-Negative Mining for UAV Cross-View Localization**
+**Cluster-Routed Hard-Negative Mining for UAV Cross-View Visual-Localization**
 
 *Kim-Phuong Phung, Quang-Uy Nguyen — Le Quy Don Technical University*
 *Paper currently in preparation.*
@@ -51,15 +51,21 @@ Full method details, all losses, and every experimental protocol are in
 | Method | Backbone | Params | R@1 | R@5 | SDM@1 |
 |---|---|---|---|---|---|
 | DenseUAV baseline | ViT-S | ~22M | 83.01 | 95.58 | 86.50 |
-| MCCG | ConvNeXt-T | ~28M | 83.14 | 93.39 | 85.94 |
+| MCCG¹ | ConvNeXt-T | ~28M | 90.26 | **97.90** | **91.82** |
 | CAMP | ConvNeXt-B | 91.4M | 88.72 | — | — |
-| CEUSP | ConvNeXt-T | ~28M | 89.45 | 96.05 | **91.01** |
+| CEUSP | ConvNeXt-T | ~28M | 89.45 | 96.05 | 91.01 |
 | **Ours** | Swin-B | ~88M | 86.62 | 96.83 | 89.50 |
 | **Ours + VQ re-rank** | Swin-B | ~88M | 88.55 | 96.61 | — |
 | **Ours** | ConvNeXt-T | ~28M | 82.41 | 94.59 | 85.83 |
-| **Ours + VQ re-rank** | ConvNeXt-T | ~28M | **91.89** | **96.83** | — |
+| **Ours + VQ re-rank** | ConvNeXt-T | ~28M | **91.89** | 96.83 | — |
 | **Ours** | ConvNeXt-B | ~89M | 84.56 | 95.02 | 87.45 |
 | **Ours + VQ re-rank** | ConvNeXt-B | ~89M | 91.29 | 96.48 | — |
+
+¹ Our own reproduction from MCCG's official released code (199 epochs,
+paper's recipe: lr=0.01, batch size 8, triplet-loss weight 0.3), evaluated
+under the same protocol as every other row — not a secondhand figure. See
+the paper for details on why this differs from the 83.14 R@1 previously
+reported for MCCG via CEUSP's comparison table.
 
 **SUES-200** (official 120/80 split, 80-tile gallery, R@1 by altitude):
 
@@ -204,8 +210,8 @@ authors.
      add a DOI or arXiv eprint field once available. -->
 ```bibtex
 @article{phung2026clusterrouted,
-  title   = {Cluster-Routed Descriptor Learning with Structured Hard-Negative
-             Mining for UAV Cross-View Localization},
+  title   = {Cluster-Routed Hard-Negative Mining for UAV Cross-View
+             Visual-Localization},
   author  = {Phung, Kim-Phuong and Nguyen, Quang-Uy},
   journal = {TBD},
   year    = {2026}
