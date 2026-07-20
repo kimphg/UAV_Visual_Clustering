@@ -54,6 +54,7 @@ Full method details, all losses, and every experimental protocol are in
 | MCCG¹ | ConvNeXt-T | ~28M | 90.26 | **97.90** | **91.82** |
 | CAMP | ConvNeXt-B | 91.4M | 88.72 | — | — |
 | CEUSP | ConvNeXt-T | ~28M | 89.45 | 96.05 | 91.01 |
+| DINOv2-GLFA | DINOv2-B | ~86M | 86.27 | 96.83 | 88.87 |
 | **Ours** | Swin-B | ~88M | 86.62 | 96.83 | 89.50 |
 | **Ours + VQ re-rank** | Swin-B | ~88M | 88.55 | 96.61 | — |
 | **Ours** | ConvNeXt-T | ~28M | 82.41 | 94.59 | 85.83 |
@@ -115,6 +116,7 @@ per-altitude breakdowns) are in the paper.
 | CEUSP | [Xu et al., PRCV 2025](https://arxiv.org/abs/2502.11408) | no public code/weights at time of writing |
 | DAC | [Xia et al., TCSVT 2024](https://doi.org/10.1109/TCSVT.2024.3443510) | [SummerpanKing/DAC](https://github.com/SummerpanKing/DAC) |
 | MEAN | [Chen et al., TGRS 2025](https://arxiv.org/abs/2412.14819) | [ISChenawei/MEAN](https://github.com/ISChenawei/MEAN) |
+| DINOv2-GLFA | [Yang et al., IEEE RA-L 2025](https://doi.org/10.1109/LRA.2025.3527762) | no public code found at time of writing |
 
 ## Repository layout
 
