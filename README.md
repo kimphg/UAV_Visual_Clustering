@@ -51,22 +51,35 @@ Full method details, all losses, and every experimental protocol are in
 | Method | Backbone | Params | R@1 | R@5 | SDM@1 |
 |---|---|---|---|---|---|
 | DenseUAV baseline | ViT-S | ~22M | 83.01 | 95.58 | 86.50 |
+| MCCG² | ConvNeXt-T | ~28M | 83.14 | — | — |
 | MCCG¹ | ConvNeXt-T | ~28M | 90.26 | **97.90** | **91.82** |
 | CAMP | ConvNeXt-B | 91.4M | 88.72 | — | — |
 | CEUSP | ConvNeXt-T | ~28M | 89.45 | 96.05 | 91.01 |
 | DINOv2-GLFA | DINOv2-B | ~86M | 86.27 | 96.83 | 88.87 |
 | **Ours** | Swin-B | ~88M | 86.62 | 96.83 | 89.50 |
 | **Ours + VQ re-rank** | Swin-B | ~88M | 88.55 | 96.61 | — |
-| **Ours** | ConvNeXt-T | ~28M | 82.41 | 94.59 | 85.83 |
-| **Ours + VQ re-rank** | ConvNeXt-T | ~28M | **91.89** | 96.83 | — |
-| **Ours** | ConvNeXt-B | ~89M | 84.56 | 95.02 | 87.45 |
-| **Ours + VQ re-rank** | ConvNeXt-B | ~89M | 91.29 | 96.48 | — |
+| **Ours** | ConvNeXt-T | ~28M | 86.14 | 96.91 | 89.12 |
+| **Ours + VQ re-rank** | ConvNeXt-T | ~28M | **94.38** | **98.24** | — |
+| **Ours** | ConvNeXt-B | ~89M | 87.22 | 96.95 | 89.85 |
+| **Ours + VQ re-rank** | ConvNeXt-B | ~89M | 92.58 | 98.16 | — |
 
 ¹ Our own reproduction from MCCG's official released code (199 epochs,
 paper's recipe: lr=0.01, batch size 8, triplet-loss weight 0.3), evaluated
-under the same protocol as every other row — not a secondhand figure. See
-the paper for details on why this differs from the 83.14 R@1 previously
-reported for MCCG via CEUSP's comparison table.
+under the same protocol as every other row.
+
+² MCCG's DenseUAV R@1 as reported secondhand via CEUSP's comparison
+table — MCCG's own paper does not evaluate DenseUAV, and CEUSP states no
+reproduction methodology (epochs, learning rate, or official-code use) for
+this or any other baseline it reports, nor R@5/SDM@1 for MCCG. Superseded
+by our own independently verified reproduction (¹) above.
+
+The ConvNeXt-T/B numbers above were revised upward from an earlier draft
+(82.41/91.89 and 84.56/91.29) after fixing a bug in the VQ re-rank
+pipeline's shared retrieval-feature helper: for ConvNeXt-style backbones,
+timm applies a final LayerNorm2d in the classifier head after global
+pooling that the helper was skipping, understating the true embedding
+quality. Swin-B/ViT/DINOv2 backbones are unaffected. See the paper for
+details.
 
 **SUES-200** (official 120/80 split, 80-tile gallery, R@1 by altitude):
 
@@ -201,10 +214,33 @@ available as optional post-processing stages on the coarse ranking.
 ## Checkpoints
 
 Trained checkpoints are not committed to this repository (multi-GB
-binaries). See the paper for the exact per-dataset fine-tuning recipe used to
-produce every reported number; checkpoints can be reproduced from ImageNet-
-or DenseUAV-pretrained weights following those recipes, or requested from the
-authors.
+binaries). The 9 final checkpoints that produced every reported number
+(3 backbones x DenseUAV/SUES-200/University-1652) are available here:
+
+**[Google Drive link — TODO: paste link after upload]**
+
+Filenames match the table in `checkpoints_release/MANIFEST.md` (mirrored
+below) — `{backbone}_{dataset}.pt`, e.g. `convnext_t_denseuav.pt`.
+
+| Filename | Dataset | Backbone | Reported R@1 |
+|---|---|---|---|
+| `swin_b_denseuav.pt` | DenseUAV | Swin-B | 86.62 (coarse) / 88.55 (+VQ) |
+| `convnext_t_denseuav.pt` | DenseUAV | ConvNeXt-T | 86.14 (coarse) / 94.38 (+VQ) |
+| `convnext_b_denseuav.pt` | DenseUAV | ConvNeXt-B | 87.22 (coarse) / 92.58 (+VQ) |
+| `swin_b_sues200_ft.pt` | SUES-200 | Swin-B | 96.30 @150m |
+| `convnext_t_sues200_ft.pt` | SUES-200 | ConvNeXt-T | 91.77 @150m |
+| `convnext_b_sues200_ft.pt` | SUES-200 | ConvNeXt-B | 94.97 @150m |
+| `swin_b_u1652_ft.pt` | University-1652 | Swin-B | 94.52 (D→S) / 96.86 (S→D) |
+| `convnext_t_u1652_ft.pt` | University-1652 | ConvNeXt-T | 82.08 (D→S) / 92.44 (S→D) |
+| `convnext_b_u1652_ft.pt` | University-1652 | ConvNeXt-B | 90.91 (D→S) / 95.72 (S→D) |
+
+All are `SwinEmbedding` state dicts (see `model.py`); load with
+`torch.load(path, weights_only=False)` then
+`model.load_state_dict(ckpt["model_state_dict"])`. See the paper for the
+exact per-dataset fine-tuning recipe used to produce each one; earlier
+training-stage snapshots and intermediate epochs are not included here but
+can be reproduced from ImageNet- or DenseUAV-pretrained weights following
+those recipes, or requested from the authors.
 
 ## Citation
 

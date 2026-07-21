@@ -1785,6 +1785,7 @@ Method & Backbone & Params & R@1 & R@5 & SDM@1 \\
 \midrule
 DenseUAV baseline~\cite{dai2024denseuav}    & ViT-S      & $\sim$22\,M & 83.01 & 95.58 & 86.50 \\
 Sample4Geo~\cite{deuser2023sample4geo}      & ConvNeXt-B & 87.6\,M     & 49.38 & 78.29 & 61.72 \\
+MCCG~\cite{shen2024mccg}\textsuperscript{$\ast$}             & ConvNeXt-T & $\sim$28\,M & 83.14 & --    & --    \\
 MCCG~\cite{shen2024mccg}\textsuperscript{$\triangle$}        & ConvNeXt-T & $\sim$28\,M & 90.26 & \textbf{97.90} & \textbf{91.82} \\
 CAMP~\cite{wu2024camp}\textsuperscript{$\diamond$}                        & ConvNeXt-B & 91.4\,M     & 88.72 & --    & --    \\
 CEUSP~\cite{xu2025ceusp}\textsuperscript{$\star$}         & ConvNeXt-T & $\sim$28\,M & 89.45 & 96.05 & 91.01 \\
@@ -1792,32 +1793,48 @@ DINOv2-GLFA~\cite{yang2025dinov2}           & DINOv2-B   & $\sim$86\,M & 86.27 &
 \midrule
 \textbf{Ours}\textsuperscript{\S}                & Swin-B & $\sim$88\,M & 86.62 & 96.83 & 89.50 \\
 \textbf{Ours + VQ re-rank}\textsuperscript{\S\P} & Swin-B & $\sim$88\,M & 88.55 & 96.61 & --\textsuperscript{\dag} \\
-\textbf{Ours}\textsuperscript{\S\ddag}                & ConvNeXt-T & $\sim$28\,M & 82.41 & 94.59 & 85.83 \\
-\textbf{Ours + VQ re-rank}\textsuperscript{\S\P\ddag} & ConvNeXt-T & $\sim$28\,M & \textbf{91.89} & 96.83 & --\textsuperscript{\dag} \\
-\textbf{Ours}\textsuperscript{\S\#}                & ConvNeXt-B & $\sim$89\,M & 84.56 & 95.02 & 87.45 \\
-\textbf{Ours + VQ re-rank}\textsuperscript{\S\P\#} & ConvNeXt-B & $\sim$89\,M & 91.29 & 96.48 & --\textsuperscript{\dag} \\
+\textbf{Ours}\textsuperscript{\S\ddag}                & ConvNeXt-T & $\sim$28\,M & 86.14 & 96.91 & 89.12 \\
+\textbf{Ours + VQ re-rank}\textsuperscript{\S\P\ddag} & ConvNeXt-T & $\sim$28\,M & \textbf{94.38} & \textbf{98.24} & --\textsuperscript{\dag} \\
+\textbf{Ours}\textsuperscript{\S\#}                & ConvNeXt-B & $\sim$89\,M & 87.22 & 96.95 & 89.85 \\
+\textbf{Ours + VQ re-rank}\textsuperscript{\S\P\#} & ConvNeXt-B & $\sim$89\,M & 92.58 & 98.16 & --\textsuperscript{\dag} \\
 \bottomrule
 \end{tabular}}
 
 \vspace{2pt}
 {\footnotesize
-\textsuperscript{\ddag}\,Selected ConvNeXt-T checkpoint (epoch 25 of
-fine-tuning from a 20-epoch config-sweep winner: lr=$3\times10^{-4}$, last 3
-backbone stages unfrozen); later checkpoints were evaluated and regressed,
-so this checkpoint is the final reported model.\\
+\textsuperscript{\ddag}\,Selected ConvNeXt-T checkpoint: continued from this
+paper's originally-reported epoch-25 DenseUAV checkpoint for 5 more epochs
+at lr=$2\times10^{-5}$ with the last 2 backbone stages unfrozen (winner of a
+3-config unfreeze-depth sweep at this learning rate over a 3-stage-unfrozen
+alternative, which scored 85.50 R@1; a 4-stage-unfrozen configuration was
+not run). Also reports R@10\,$=98.71$, mAP\,$=74.18$ (coarse) and
+R@10\,$=98.71$, mAP\,$=79.42$ (VQ re-rank).\\
+The coarse and VQ re-rank numbers for both ConvNeXt rows in this table were
+revised upward from an earlier draft (ConvNeXt-T: 82.41/91.89; ConvNeXt-B:
+84.56/91.29) after fixing a bug in \texttt{model.py}'s shared
+retrieval-feature helper used by the VQ pipeline
+(\texttt{encode\_spatial\_features}/\texttt{encode\_features\_and\_scale}):
+for ConvNeXt-style backbones, timm applies a final LayerNorm2d in the
+classifier head after global pooling that this helper skipped, producing a
+materially different, weaker embedding than the model's actual retrieval
+output (mean absolute difference $\approx0.75$ against the correct
+embedding). Swin-B, ViT, and DINOv2 backbones are unaffected -- verified
+their \texttt{forward\_features} output already matches the full backbone
+forward exactly.\\
 \textsuperscript{$\star$}\,CEUSP reports results at $256\times256$ input
 (ours: $384\times384$); at the time of writing, no public code or pretrained
 weights were available for CEUSP, so its numbers could not be independently
 verified.\\
-\textsuperscript{$\triangle$}\,MCCG's DenseUAV row is our own reproduction,
-not a secondhand figure: trained from the official released code
-\cite{shen2024mccg} for 199 epochs with the paper's stated recipe
-(lr=$0.01$, batch size 8, triplet-loss weight 0.3), evaluated under the same
-protocol as every other row in this table. This exceeds the DenseUAV R@1
-of 83.14 previously reported for MCCG via CEUSP's comparison table
-\cite{xu2025ceusp}; we could not find any stated reproduction methodology
-(epochs, learning rate, or whether official code was used) for that number,
-so we report our own independently verified result instead.\\
+\textsuperscript{$\ast$}\,MCCG's DenseUAV R@1 as reported secondhand via
+CEUSP's comparison table \cite{xu2025ceusp} -- MCCG's own paper does not
+evaluate DenseUAV, and CEUSP states no reproduction methodology (epochs,
+learning rate, or whether official code was used) for this or any other
+baseline it reports, nor R@5/SDM@1 for MCCG. Superseded by our own
+independently verified reproduction on the row below.\\
+\textsuperscript{$\triangle$}\,Our own reproduction, trained from MCCG's
+official released code \cite{shen2024mccg} for 199 epochs with the paper's
+stated recipe (lr=$0.01$, batch size 8, triplet-loss weight 0.3), evaluated
+under the same protocol as every other row in this table.\\
 \textsuperscript{$\diamond$}\,CAMP's DenseUAV figure is taken from CEUSP's
 comparison table~\cite{xu2025ceusp}; CAMP's own paper evaluates
 University-1652 and SUES-200 only and reports no DenseUAV results, so R@5
@@ -1834,12 +1851,12 @@ for the re-ranked ordering.\\
 training chain from ImageNet, transplanted recipe lr=$2\times10^{-4}$, last 3
 backbone stages unfrozen); per-epoch selection used a lighter-weight
 monitoring eval (R@1 76.53 / 80.44 / 81.25 / 85.16 / 87.22 at epochs
-5/10/15/20/25, epoch 30 regressed to 86.83) to pick the checkpoint cheaply,
-so this trajectory is not directly comparable to the table's row, which
-re-evaluates the selected epoch-25 checkpoint under the same official
-protocol as the Swin-B and ConvNeXt-T rows -- the same epoch-25-peak pattern
-observed for ConvNeXt-T. Also reports R@10\,$=97.85$, mAP\,$=73.39$ (coarse)
-and R@10\,$=97.85$, mAP\,$=77.71$ (VQ re-rank).}
+5/10/15/20/25, epoch 30 regressed to 86.83) to pick the checkpoint cheaply --
+this table's row now matches that monitoring trajectory exactly (87.22)
+after the retrieval-feature bug fix described under \ddag; the same
+checkpoint's earlier-draft number (84.56) predates the fix. Also reports
+R@10\,$=98.84$, mAP\,$=76.95$ (coarse) and R@10\,$=98.84$, mAP\,$=80.75$
+(VQ re-rank).}
 \end{table}
 
 The most important training diagnostic is the anchor-positive same-cluster

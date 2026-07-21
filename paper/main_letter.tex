@@ -1,0 +1,429 @@
+\documentclass[conference]{IEEEtran}
+
+% T1 fontenc: gives Times (ptm) real small-caps coverage for the glyphs that
+% otherwise fall back to TS1 inside IEEEtran's small-caps table captions
+% (source of the "Font shape TS1/ptm/m/sc undefined" warning).
+\usepackage[T1]{fontenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{array}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc,shapes.geometric,shapes.misc}
+
+\begin{document}
+
+\title{Cluster-Routed Hard-Negative Mining for UAV Cross-View Visual-Localization}
+
+\author{
+\IEEEauthorblockN{Kim-Phuong Phung}
+\IEEEauthorblockA{
+% TODO: department/faculty name and email
+\textit{Le Quy Don Technical University}\\
+Hanoi, Vietnam\\
+email@example.com}
+\and
+\IEEEauthorblockN{Quang-Uy Nguyen}
+\IEEEauthorblockA{
+% TODO: department/faculty name and email
+\textit{Le Quy Don Technical University}\\
+Hanoi, Vietnam\\
+email@example.com}
+}
+
+\maketitle
+
+\begin{abstract}
+UAV visual localization retrieves the geographic position of an aerial
+query image from a large georeferenced satellite gallery. Flat contrastive
+training draws negatives uniformly from the batch or dataset, so the
+gradient concentrates on already-easy pairs while the visually repetitive
+candidates that actually cause retrieval errors -- nearby rooftops, road
+grids, field boundaries -- are rarely contrasted against the query. We
+propose a cluster-routed pipeline in which a single raw, L2-normalized
+backbone embedding serves as the retrieval descriptor with no projection
+head, trained so that a K-means partition over this descriptor doubles as
+both the evaluation-time routing structure and the training-time
+hard-negative source: negatives are drawn from a query's own cluster and
+its nearest neighbors, ranked by descriptor similarity, with co-positive
+exclusion preventing true matches from being pushed apart. Because
+clusters are rebuilt from the current descriptor, the mining pool tracks
+the model and continually re-targets whatever confusions remain. On five
+UAV-satellite benchmarks (DenseUAV, SUES-200, University-1652, GTA-UAV,
+UAV-VisLoc) this single mechanism matches or exceeds recent
+part-supervised and domain-alignment methods that require additional
+heads or losses.
+\end{abstract}
+
+\begin{IEEEkeywords}
+UAV localization, cross-view retrieval, hard-negative mining, clustering,
+metric learning.
+\end{IEEEkeywords}
+
+\section{Introduction}
+UAV visual localization matches an aerial query against a georeferenced
+satellite gallery, learning an embedding in which geographically
+corresponding views are close and unrelated locations are far apart
+\cite{hadsell2006dimensionality,schroff2015facenet}. The central obstacle
+is not the appearance gap between views but the many visually repetitive
+candidates a large map contains: a flat in-batch contrastive objective
+draws negatives uniformly from the batch, so most land far from the
+query, where the gradient is already near zero, while the query's actual
+look-alike neighbors are almost never sampled.
+
+We address this with a single mechanism rather than an additional loss
+term or head. The backbone's own L2-normalized output is trained -- by
+unfreezing its last stages -- to place corresponding query-gallery crops
+into the same K-means cluster. This descriptor is then used for three
+roles at once: routing a query to its nearest map clusters at evaluation
+time, scoring candidates inside those clusters, and, centrally,
+\emph{supplying the hard-negative pool during training}: negatives are
+drawn from a query's own cluster and its nearest neighbors, ranked by
+current descriptor similarity, with co-positive exclusion removing any
+candidate that shares a positive with the query. Because the partition is
+rebuilt from the evolving descriptor, the negative pool automatically
+re-targets whatever confusions the model has not yet resolved.
+
+Our contribution is this cluster-structured hard-negative mining
+mechanism and the coarse-to-fine retrieval it enables. We evaluate it on
+five UAV-satellite benchmarks against recent methods that instead add
+part-partitioning heads or explicit spatial-alignment losses, and show
+the single-descriptor mechanism matches or exceeds them without extra
+trainable parameters.
+
+\section{Related Work}
+Sample4Geo showed that symmetric InfoNCE with hard-negative sampling
+outperforms complex aggregation pipelines for cross-view retrieval
+\cite{deuser2023sample4geo}, and Game4Loc extended this to a
+partial-overlap UAV setting with weighted InfoNCE over a multi-zoom
+satellite tile gallery \cite{ji2024game4loc}. A parallel line strengthens
+this baseline with explicit spatial supervision instead of sampling
+changes: LPN and FSRA partition the feature map into rings or
+activation-ranked regions and supervise each part
+\cite{wang2021lpn,dai2022fsra}; MCCG applies part-level contrastive
+matching \cite{shen2024mccg}; DAC adds a domain/scene spatial-alignment
+loss and hard-negative reweighting \cite{xia2024dac}; MEAN extends this
+with a multilevel consistency loss \cite{chen2025mean}; CAMP combines
+position-aware partitioning with attribute mining \cite{wu2024camp}; and
+CEUSP augments a compact backbone with multi-directional attention and
+dynamic sampling \cite{xu2025ceusp}. GLVL instead separates coarse
+retrieval from a dedicated fine-matching module \cite{li2023glvl}. All of
+these add parameters or losses beyond the pooled descriptor; the method
+here instead restructures \emph{what the existing descriptor is trained
+against}, using FAISS K-means \cite{johnson2019billion,macqueen1967methods}
+as both the routing and negative-sampling structure.
+
+\section{Method}
+\subsection{Descriptor and Cluster Routing}
+The visual encoder is a pretrained \texttt{timm} backbone (Swin-B at
+$384{\times}384$ \cite{liu2021swin}, or a $3\times$-smaller ConvNeXt-T/B
+variant) with the classification layer removed. Its globally pooled
+output is L2-normalized directly into the retrieval descriptor,
+\begin{equation}
+    \mathbf{c}(\mathbf{x}) = \mathrm{norm}\big(f_b(\mathbf{x})\big)
+    \in \mathbb{R}^{D},
+\end{equation}
+with no projection head: the same $\mathbf{c}(\mathbf{x})$ is used for
+matching, K-means assignment, and negative mining. Only the last backbone
+stages are unfrozen, so this is the sole mechanism by which the
+descriptor is adapted. Given L2-normalized centroids
+$\mathbf{C}=\{\mathbf{c}_1,\dots,\mathbf{c}_K\}$, the routing score is
+$\mathbf{s}(\mathbf{x})=\mathbf{c}(\mathbf{x})\mathbf{C}^T$; at evaluation
+time a query is routed to its top-$K_c$ nearest clusters and only the
+tiles assigned to them are scored, cutting candidate-scoring cost by a
+factor of $K/K_c$.
+
+\subsection{Cluster-Structured Hard-Negative Mining}
+\label{sec:hard_mining}
+At the start of each epoch the trainer extracts descriptors for all
+anchors and positives, runs FAISS K-means, and measures the
+anchor-positive same-cluster probability, re-clustering (warm-started
+from the previous centroids after the first epoch) whenever it drops
+below 0.80. This partition then supplies training-time negatives: for
+each anchor, 50\% of negatives are drawn from its own cluster (ranked by
+descriptor similarity to the anchor -- the hardest confusers), 30\% from
+the nearest neighboring cluster, and 20\% globally at random for
+coverage. Two safeguards keep this signal clean. \emph{Co-positive
+exclusion} removes any candidate sharing a positive tile with the anchor
+(directly or through an overlapping positive) from the negative pool,
+since pushing apart two views of the same place would oppose the
+alignment objective. The negative loss is also warmed up over early
+training steps so unstable early descriptors are not dominated by noisy
+hard negatives. Because clusters are rebuilt from the current descriptor,
+this pool is self-correcting: as look-alike regions are pulled apart, the
+clusters -- and therefore the negatives -- re-focus on whatever confusion
+remains, unlike a fixed or randomly-refreshed negative set.
+Fig.~\ref{fig:mining_comparison} contrasts this against standard in-batch
+InfoNCE sampling.
+
+\begin{figure}[t]
+\centering
+\tikzset{
+  negopen/.style = {circle, draw=red!70!black, thick, inner sep=1.4pt},
+  negfill/.style = {circle, fill=red!70!black, inner sep=1.4pt},
+  posdot/.style  = {circle, fill=green!55!black, inner sep=1.6pt},
+  anchdot/.style = {star, star points=5, star point ratio=2.4, fill=black,
+                    inner sep=1.3pt},
+  graydot/.style = {circle, fill=black!30, inner sep=1.2pt},
+  cent/.style    = {cross out, draw=blue!60!black, thick, inner sep=1.6pt},
+  panel/.style   = {rounded corners=4pt, draw=black!60, thick},
+  note/.style    = {font=\tiny, align=center},
+}
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+
+\begin{scope}
+\draw[panel] (0,0) rectangle (7,5);
+\node[font=\scriptsize\bfseries, anchor=south west] at (0.05,5.05)
+  {(a) In-batch InfoNCE};
+\node[anchdot] (a1) at (2.2,2.6) {};
+\node[posdot]  at (2.55,2.95) {};
+\draw[dashed, black!50] (2.2,2.6) circle (0.85);
+\node[note, black!60] at (2.2,1.35) {look-alike neighborhood:\\rarely sampled};
+\foreach \p in {(5.9,4.3),(6.2,1.2),(4.8,0.7),(5.4,3.1),(6.5,2.5),
+                (4.3,4.5),(3.9,1.0),(1.0,4.4),(0.8,0.9)}
+  \node[negopen] at \p {};
+\node[note] at (4.9,4.85) {negatives $=$ other batch items};
+\node[note, red!60!black] at (5.6,0.35) {distant $\Rightarrow$ easy};
+\end{scope}
+
+\begin{scope}[shift={(7.6,0)}]
+\draw[panel] (0,0) rectangle (7,5);
+\node[font=\scriptsize\bfseries, anchor=south west] at (0.05,5.05)
+  {(b) Cluster-structured (ours)};
+\draw[dashed, black!45] (3.45,0) .. controls (3.2,1.8) and (3.6,3.4) .. (3.3,5);
+\draw[dashed, black!45] (3.4,2.15) .. controls (4.8,2.3) and (5.8,2.0) .. (7,2.3);
+\node[cent] at (1.9,2.7) {};
+\node[cent] at (5.2,3.7) {};
+\node[cent] at (5.3,1.0) {};
+\node[anchdot] at (2.0,2.4) {};
+\node[posdot]  at (2.35,2.75) {};
+\foreach \p in {(1.45,2.0),(2.65,1.85),(1.6,3.25),(2.85,2.95)}
+  \node[negfill] at \p {};
+\node[note, red!60!black] at (1.75,1.15) {50\% same cluster\\(hardest)};
+\foreach \p in {(4.35,3.4),(5.0,4.25),(4.7,2.75)}
+  \node[negfill] at \p {};
+\node[note, red!60!black] at (4.75,4.75) {30\% nearest\\cluster};
+\node[negfill] at (6.3,0.65) {};
+\node[note, red!60!black] at (5.45,0.4) {20\% random};
+\node[graydot] (cp) at (2.5,2.15) {};
+\draw[red!70!black, thick] (2.36,2.01) -- (2.64,2.29);
+\draw[red!70!black, thick] (2.36,2.29) -- (2.64,2.01);
+\node[note, black!60, anchor=west] at (3.0,1.45)
+  {co-positive: excluded};
+\draw[-Stealth, black!50] (3.05,1.6) -- (2.62,2.05);
+\end{scope}
+
+\begin{scope}[shift={(0.6,-0.7)}]
+\node[anchdot]  at (0,0) {};   \node[note, anchor=west] at (0.15,0) {anchor};
+\node[posdot]   at (1.7,0) {}; \node[note, anchor=west] at (1.85,0) {positive};
+\node[negopen]  at (3.6,0) {}; \node[note, anchor=west] at (3.75,0) {in-batch neg.};
+\node[negfill]  at (6.1,0) {}; \node[note, anchor=west] at (6.25,0) {mined neg.};
+\node[cent]     at (8.4,0) {}; \node[note, anchor=west] at (8.55,0) {centroid};
+\end{scope}
+
+\end{tikzpicture}%
+}
+\caption{In-batch InfoNCE draws negatives uniformly over the dataset, so
+the anchor's actual look-alike neighborhood (dashed) is rarely sampled
+(a). Our mining instead draws 50/30/20\% of negatives from the anchor's
+own, nearest, and random clusters ranked by descriptor similarity, with
+co-positive exclusion (b); because clusters are rebuilt from the current
+descriptor, this pool self-corrects as training progresses.}
+\label{fig:mining_comparison}
+\end{figure}
+
+\subsection{Training Objective}
+Paired in-batch InfoNCE aligns anchor-positive descriptors
+$\mathbf{q}_i,\mathbf{p}_i$,
+\begin{equation}
+\mathcal{L}_{align} = -\frac{1}{B}\sum_i \log
+\frac{\exp(\mathbf{q}_i^T\mathbf{p}_i/\tau)}
+{\sum_j \exp(\mathbf{q}_i^T\mathbf{p}_j/\tau)}, \quad \tau=0.10,
+\end{equation}
+and for sampled negatives $\mathbf{n}_{ij}$ from Section~\ref{sec:hard_mining}
+a margin loss suppresses confusable candidates,
+\begin{equation}
+\mathcal{L}_{neg} = \mathbb{E}_{i,j}\Big[\max\big(0,
+\tfrac{1}{2}(\mathbf{q}_i^T\mathbf{n}_{ij}+\mathbf{p}_i^T\mathbf{n}_{ij})
+-0.60\big)^2\Big].
+\end{equation}
+A per-dimension variance term $\mathcal{L}_{var}$ prevents descriptor
+collapse, and a soft cluster-consistency term $\mathcal{L}_{consistency}$
+(symmetric KL between the anchor's and positive's softmax similarity to
+all centroids) encourages paired crops to agree on cluster assignment.
+The full objective is
+\begin{equation}
+\mathcal{L} = 1.0\,\mathcal{L}_{align} + 1.0\,\mathcal{L}_{var}
++ 0.2\,\mathcal{L}_{neg} + 2.0\,\mathcal{L}_{consistency}.
+\end{equation}
+
+\section{Experiments}
+\subsection{Setup}
+We evaluate on five UAV-satellite benchmarks, each with a model trained
+or fine-tuned only on that benchmark's own official training split:
+DenseUAV (2,256 locations, cross-altitude multi-positive pairing,
+$\tau{=}30$\,m weighting) \cite{dai2024denseuav}; SUES-200 (official
+120/80 split, 4 flight heights) \cite{zhu2023sues}; University-1652 (701
+buildings) \cite{zheng2020university1652}; GTA-UAV same-area, loaded in
+the official \texttt{pos\_semipos} mode (123,095 IoU-weighted pairs)
+\cite{ji2024game4loc}; and UAV-VisLoc, processed with the Game4Loc tiling
+protocol \cite{xu2024uavvisloc}. DenseUAV/SUES-200/University-1652 are
+evaluated with each benchmark's own official closed-gallery evaluator;
+GTA-UAV/UAV-VisLoc use the Game4Loc IoU-based open-map protocol
+(positive IoU $\geq 0.39$). $K{=}8$--$16$ clusters, $K_c{=}2$ searched at
+evaluation.
+
+\subsection{Ablation: Does Cluster-Structured Mining Help?}
+Table~\ref{tab:ablation} isolates the mining mechanism itself on
+UAV-VisLoc (seq.~04) and GTA-UAV, holding the backbone fixed. Moving from
+a flat descriptor to two-stage cluster-routed scoring, and then to
+cluster-structured negative mining (cluster-Mahalanobis scoring),
+recovers the errors concentrated in look-alike neighborhoods: R@1 rises
+from 0.39 (flat, untrained) to 0.92 on UAV-VisLoc, and the same
+cluster-routed descriptor matches or exceeds Game4Loc's own trained
+model on GTA-UAV despite a simpler, single-descriptor design.
+
+\begin{table}[t]
+\caption{Ablation on UAV-VisLoc seq.~04 and GTA-UAV same-area. Bold =
+best per block.}
+\label{tab:ablation}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.42\columnwidth}
+                >{\centering\arraybackslash}p{0.12\columnwidth}
+                >{\centering\arraybackslash}p{0.12\columnwidth}
+                >{\centering\arraybackslash}p{0.15\columnwidth}}
+\toprule
+Variant & R@1 & R@5 & AP \\
+\midrule
+\multicolumn{4}{l}{\textit{UAV-VisLoc, seq.~04}} \\
+\midrule
+Flat, untrained backbone      & 0.392 & 0.602 & --    \\
+Flat learned descriptor       & 0.623 & 0.817 & 0.301 \\
+Two-stage, cluster-centered   & 0.637 & 0.968 & 0.529 \\
+Two-stage, cluster-Mahalanobis (ours) & \textbf{0.919} & \textbf{1.000} & \textbf{0.719} \\
+\midrule
+\multicolumn{4}{l}{\textit{GTA-UAV same-area}} \\
+\midrule
+Game4Loc~\cite{ji2024game4loc} (paper) & 0.850 & 0.976 & \textbf{0.902} \\
+Two-stage, cosine (ours) & \textbf{0.901} & 0.983 & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Comparison with State of the Art}
+Tables~\ref{tab:soa_sues200}--\ref{tab:soa_denseuav} compare against the
+strongest recent published methods on the three closed-gallery
+benchmarks, all of which add part-partitioning heads (LPN, FSRA, MCCG,
+CAMP), explicit spatial-domain alignment losses (DAC, MEAN), or
+multi-directional attention modules (CEUSP) on top of the base
+contrastive objective. Our single cluster-routed descriptor, adapted only
+through cluster-structured mining, is competitive with or exceeds all of
+them on at least one metric per benchmark, with no additional trainable
+head or loss term. On DenseUAV, an optional post-hoc re-ranking of the
+coarse top-10 using a quantized spatial-layout code (144 bytes/image, no
+retraining) further separates near-duplicate overlapping tiles, raising
+ConvNeXt-T from 86.14 to 94.38 R@1 -- exceeding CEUSP's published 89.45.
+
+\begin{table}[t]
+\caption{SUES-200 (Recall@1, \%, drone$\to$satellite, official 120/80
+split, 80-tile test gallery). Bold = best per column.}
+\label{tab:soa_sues200}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l l cccc}
+\toprule
+Method & Backbone & 150\,m & 200\,m & 250\,m & 300\,m \\
+\midrule
+LPN~\cite{wang2021lpn}                 & ResNet-50  & 58.20 & 69.60 & 75.60 & 78.50 \\
+FSRA~\cite{dai2022fsra}                & ViT-S      & 78.70 & 85.65 & 88.95 & 91.50 \\
+MCCG~\cite{shen2024mccg}               & ConvNeXt-T & 79.96 & 85.01 & 90.47 & 94.20 \\
+Sample4Geo~\cite{deuser2023sample4geo} & ConvNeXt-B & 94.75 & 96.75 & 97.25 & 97.20 \\
+MEAN~\cite{chen2025mean}               & ConvNeXt-T & 95.50 & \textbf{98.38} & 98.95 & 99.17 \\
+DAC~\cite{xia2024dac}                  & ConvNeXt-B & \textbf{96.80} & 97.48 & 98.20 & 97.58 \\
+\midrule
+\textbf{Ours} & Swin-B     & 96.30 & 98.25 & \textbf{99.00} & 99.15 \\
+\textbf{Ours} & ConvNeXt-T & 91.77 & 95.20 & 96.90 & 97.52 \\
+\textbf{Ours} & ConvNeXt-B & 94.97 & 97.28 & 98.50 & \textbf{99.35} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\caption{University-1652 (R@1/AP, \%). D$\to$S: drone query, satellite
+gallery. S$\to$D: satellite query, drone gallery. Bold = best per column.}
+\label{tab:soa_u1652}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{l l cc cc}
+\toprule
+& & \multicolumn{2}{c}{D $\to$ S} & \multicolumn{2}{c}{S $\to$ D} \\
+Method & Backbone & R@1 & AP & R@1 & AP \\
+\midrule
+LPN~\cite{wang2021lpn}                 & ResNet-50  & 75.93 & 79.14 & 86.45 & 74.79 \\
+FSRA~\cite{dai2022fsra}                & ViT-S      & 84.51 & 86.71 & 88.45 & 83.37 \\
+MCCG~\cite{shen2024mccg}               & ConvNeXt-T & 89.64 & 91.32 & 94.30 & 89.39 \\
+Sample4Geo~\cite{deuser2023sample4geo} & ConvNeXt-B & 92.65 & 93.81 & 95.14 & 91.39 \\
+MEAN~\cite{chen2025mean}               & ConvNeXt-T & 93.55 & 94.53 & 96.01 & 92.08 \\
+DAC~\cite{xia2024dac}                  & ConvNeXt-B & \textbf{94.67} & \textbf{95.50} & 96.43 & 93.79 \\
+\midrule
+\textbf{Ours} & Swin-B     & 94.52 & 95.44 & \textbf{96.86} & \textbf{93.83} \\
+\textbf{Ours} & ConvNeXt-T & 82.08 & 84.69 & 92.44 & 80.38 \\
+\textbf{Ours} & ConvNeXt-B & 90.91 & 92.44 & 95.72 & 90.32 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\caption{DenseUAV (drone$\to$satellite, same-area, full 18{,}198-tile
+gallery). SDM@1 is DenseUAV's spatial-distance metric. Bold = best per
+column. \textsuperscript{$\triangle$}MCCG row is our own reproduction from
+official code (199 epochs, paper's recipe), not a secondhand figure -- see
+extended version for details.}
+\label{tab:soa_denseuav}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{l l ccc}
+\toprule
+Method & Backbone & R@1 & R@5 & SDM@1 \\
+\midrule
+DenseUAV baseline~\cite{dai2024denseuav} & ViT-S      & 83.01 & 95.58 & 86.50 \\
+Sample4Geo~\cite{deuser2023sample4geo}   & ConvNeXt-B & 49.38 & 78.29 & 61.72 \\
+MCCG~\cite{shen2024mccg}\textsuperscript{$\triangle$} & ConvNeXt-T & 90.26 & \textbf{97.90} & \textbf{91.82} \\
+CAMP~\cite{wu2024camp}                   & ConvNeXt-B & 88.72 & --    & --    \\
+CEUSP~\cite{xu2025ceusp}                 & ConvNeXt-T & 89.45 & 96.05 & 91.01 \\
+DINOv2-GLFA~\cite{yang2025dinov2}         & DINOv2-B   & 86.27 & 96.83 & 88.87 \\
+\midrule
+\textbf{Ours}              & Swin-B     & 86.62 & 96.83 & 89.50 \\
+\textbf{Ours}              & ConvNeXt-T & 86.14 & 96.91 & 89.12 \\
+\textbf{Ours}              & ConvNeXt-B & 87.22 & 96.95 & 89.85 \\
+\textbf{Ours} + VQ re-rank & ConvNeXt-T & \textbf{94.38} & \textbf{98.24} & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Conclusion}
+Restructuring the negative pool around the same K-means partition used
+for routing -- rather than adding a part-supervision head or a
+spatial-alignment loss -- is enough to make a single pooled descriptor
+competitive with, and often better than, recent multi-component UAV
+cross-view methods. Because the partition is rebuilt from the current
+descriptor every epoch, the mining pool self-corrects toward whichever
+confusions the model has not yet resolved, without any additional
+trainable parameters. Full per-altitude/per-gallery breakdowns, the
+vector-quantized re-ranking derivation, and results on UAV-VisLoc/GTA-UAV
+appear in the extended version of this work.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
