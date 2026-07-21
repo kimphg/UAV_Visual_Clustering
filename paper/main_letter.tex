@@ -375,11 +375,17 @@ Sample4Geo~\cite{deuser2023sample4geo} & ConvNeXt-B & 92.65 & 93.81 & 95.14 & 91
 MEAN~\cite{chen2025mean}               & ConvNeXt-T & 93.55 & 94.53 & 96.01 & 92.08 \\
 DAC~\cite{xia2024dac}                  & ConvNeXt-B & \textbf{94.67} & \textbf{95.50} & 96.43 & 93.79 \\
 \midrule
-\textbf{Ours} & Swin-B     & 94.52 & 95.44 & \textbf{96.86} & \textbf{93.83} \\
+\textbf{Ours}\textsuperscript{$\P$} & Swin-B     & 94.69 & 95.44 & \textbf{96.86} & \textbf{93.83} \\
 \textbf{Ours} & ConvNeXt-T & 82.08 & 84.69 & 92.44 & 80.38 \\
 \textbf{Ours} & ConvNeXt-B & 90.91 & 92.44 & 95.72 & 90.32 \\
 \bottomrule
 \end{tabular}
+
+\smallskip
+\raggedright\footnotesize
+\textsuperscript{$\P$}\,PROVISIONAL R@1 (K=64 cluster-count sweep, MES
+content-hash fix); confirmation run in progress, other columns not yet
+recomputed for this checkpoint.
 \end{table}
 
 \begin{table}[t]
@@ -422,6 +428,33 @@ confusions the model has not yet resolved, without any additional
 trainable parameters. Full per-altitude/per-gallery breakdowns, the
 vector-quantized re-ranking derivation, and results on UAV-VisLoc/GTA-UAV
 appear in the extended version of this work.
+
+\section*{Funding}
+% TODO: replace with actual funding source(s), or keep as-is if none.
+This research did not receive any specific grant from funding agencies in
+the public, commercial, or not-for-profit sectors.
+
+\section*{CRediT Author Statement}
+% TODO: assign roles per author using the CRediT taxonomy; edit per author.
+\textbf{Kim-Phuong Phung}: Conceptualization, Methodology, Software,
+Validation, Formal analysis, Investigation, Data curation, Writing -
+original draft, Visualization. \textbf{Quang-Uy Nguyen}: Conceptualization,
+Writing - review \& editing, Supervision, Project administration.
+
+\section*{Declaration of Generative AI Use}
+During the preparation of this work, the author(s) used Claude Code
+(Anthropic) to assist with code implementation, experiment execution, and
+manuscript writing. All AI-assisted code, experimental results, and text
+were carefully reviewed, edited, and verified by the author(s), who take
+full responsibility for the content of this article.
+
+\section*{Data Availability Statement}
+Code is available at
+\url{https://github.com/kimphg/UAV_Visual_Clustering}. Trained model
+checkpoints are available at
+\url{https://drive.google.com/drive/folders/1MJjMTtpWYBR8V7dTb40Exr1q-efToXzD}.
+Datasets used are publicly available from their respective original
+sources cited in this paper.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

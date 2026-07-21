@@ -1761,11 +1761,20 @@ Game4Loc~\cite{ji2024game4loc}         & ConvNeXt-B & 91.32 & 92.56 & 94.43 & 90
 MEAN~\cite{chen2025mean}               & ConvNeXt-T & 93.55 & 94.53 & 96.01 & 92.08 \\
 DAC~\cite{xia2024dac}\textsuperscript{$\ddagger$}                & ConvNeXt-B & \textbf{94.67} & \textbf{95.50} & 96.43 & 93.79 \\
 \midrule
-\textbf{Ours} & Swin-B & 94.52 & 95.44 & \textbf{96.86} & \textbf{93.83} \\
+\textbf{Ours}\textsuperscript{$\P$} & Swin-B & 94.69 & 95.44 & \textbf{96.86} & \textbf{93.83} \\
 \textbf{Ours} & ConvNeXt-T & 82.08 & 84.69 & 92.44 & 80.38 \\
 \textbf{Ours} & ConvNeXt-B & 90.91 & 92.44 & 95.72 & 90.32 \\
 \bottomrule
 \end{tabular}
+
+\smallskip
+\raggedright\footnotesize
+\textsuperscript{$\P$}\,PROVISIONAL: R@1 from an in-progress cluster-count
+sweep (K=64, continuing from the previously-reported checkpoint with the
+content-hash MES fix active); a longer confirmation run is in progress.
+AP/S$\to$D columns are not yet recomputed for this checkpoint and still
+show the prior (K=16) checkpoint's values -- update once the longer run
+completes.
 \end{table*}
 
 % ── DenseUAV state-of-the-art comparison ──────────────────────────────────────
@@ -1894,6 +1903,37 @@ optional vector-quantized semantic re-ranking stage. The method provides
 an operational foundation for UAV localization experiments with explicit
 cluster monitoring, checkpoint-aware cached evaluation,
 and query-level qualitative analysis.
+
+\section*{Funding}
+% TODO: replace with actual funding source(s), or keep as-is if none.
+This research did not receive any specific grant from funding agencies in
+the public, commercial, or not-for-profit sectors.
+
+\section*{CRediT Author Statement}
+% TODO: assign roles per author using the CRediT taxonomy
+% (Conceptualization, Methodology, Software, Validation, Formal analysis,
+% Investigation, Resources, Data curation, Writing - original draft,
+% Writing - review \& editing, Visualization, Supervision, Project
+% administration, Funding acquisition). Example below -- edit per author.
+\textbf{Kim-Phuong Phung}: Conceptualization, Methodology, Software,
+Validation, Formal analysis, Investigation, Data curation, Writing -
+original draft, Visualization. \textbf{Quang-Uy Nguyen}: Conceptualization,
+Writing - review \& editing, Supervision, Project administration.
+
+\section*{Declaration of Generative AI Use}
+During the preparation of this work, the author(s) used Claude Code
+(Anthropic) to assist with code implementation, experiment execution, and
+manuscript writing. All AI-assisted code, experimental results, and text
+were carefully reviewed, edited, and verified by the author(s), who take
+full responsibility for the content of this article.
+
+\section*{Data Availability Statement}
+Code is available at
+\url{https://github.com/kimphg/UAV_Visual_Clustering}. Trained model
+checkpoints are available at
+\url{https://drive.google.com/drive/folders/1MJjMTtpWYBR8V7dTb40Exr1q-efToXzD}.
+Datasets used (DenseUAV, SUES-200, University-1652, GTA-UAV) are publicly
+available from their respective original sources cited in this paper.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

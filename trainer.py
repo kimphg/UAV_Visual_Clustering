@@ -1,3 +1,4 @@
+import hashlib
 import math
 import time
 from pathlib import Path
@@ -9,6 +10,27 @@ from torch.utils.data import DataLoader
 from clustering import ClusterIndex, assign_fixed_centroids
 from loss import weighted_info_nce, group_whole_slice_info_nce
 from model import NUM_CLUSTERS
+
+# Cache of tile file path -> md5 content hash, so repeated cluster-data rebuilds
+# (once per epoch) don't re-hash unchanged files. Catches tiles that are
+# byte-identical under DIFFERENT paths (e.g. University-1652 building IDs 0761
+# and 0768 share one duplicated satellite image under the official release) --
+# a case pair_to_pos_tile's path-keyed identity cannot see, since the paths
+# genuinely differ even though the pixels don't.
+_TILE_CONTENT_HASH_CACHE = {}
+
+
+def _tile_content_hash(path_str):
+    cached = _TILE_CONTENT_HASH_CACHE.get(path_str)
+    if cached is not None:
+        return cached
+    try:
+        with open(path_str, "rb") as f:
+            h = hashlib.md5(f.read()).hexdigest()
+    except OSError:
+        return None
+    _TILE_CONTENT_HASH_CACHE[path_str] = h
+    return h
 
 
 def even_batch_size(n_samples: int, target_batch_size: int) -> int:
@@ -478,6 +500,11 @@ def train(
                 metrics = metrics_accumulator
                 metrics["training_mode"] = training_mode
                 metrics["microbatch_size"] = microbatch_size
+
+            if device.type == "cuda":
+                print(f"[MEMDEBUG] step {batch_step} allocated={torch.cuda.memory_allocated()/1e9:.3f}GB "
+                      f"reserved={torch.cuda.memory_reserved()/1e9:.3f}GB "
+                      f"max_allocated={torch.cuda.max_memory_allocated()/1e9:.3f}GB", flush=True)
 
             global_step += 1
             metrics["total_loss"] = loss_value
@@ -1018,6 +1045,24 @@ def compute_embedding_cluster_stats(
     # Convert to frozensets for safe sharing
     pos_tile_to_indices = {k: frozenset(v) for k, v in pos_tile_to_indices.items()}
     drone_to_indices    = {k: frozenset(v) for k, v in drone_to_indices.items()}
+    # Content-hash map: catches tiles that are byte-identical under DIFFERENT
+    # paths (pos_tile_to_indices above only catches same-PATH tiles). Confirmed
+    # real-world case: University-1652's official release duplicates one
+    # satellite image across two different building-ID folders (e.g. 0761 and
+    # 0768) -- without this, those two IDs could be sampled as "hard negatives"
+    # of each other despite being pixel-identical, a false negative that no
+    # amount of training can resolve. Hashing is cached by path (see
+    # _tile_content_hash), so this costs one-time I/O per unique tile, not
+    # per-epoch, after the first cluster rebuild.
+    pair_to_content_hash = {}
+    content_hash_to_indices = {}
+    for idx, tile_name in pair_to_pos_tile.items():
+        h = _tile_content_hash(tile_name)
+        if h is not None:
+            pair_to_content_hash[idx] = h
+            content_hash_to_indices.setdefault(h, set()).add(idx)
+    content_hash_to_indices = {k: frozenset(v) for k, v in content_hash_to_indices.items()
+                               if len(v) > 1}
     # Spatial coordinate map: (seq, zoom, col, row) → frozenset of pair indices.
     # Tile names follow {seq}_{zoom}_{col}_{row}.png (e.g. 04_7_009_020.png).
     # Used in the exclusion loop to block adjacent tiles (Chebyshev ≤ 2) from
@@ -1044,6 +1089,8 @@ def compute_embedding_cluster_stats(
     cluster_sampling["pair_to_drone"]         = pair_to_drone
     cluster_sampling["drone_to_indices"]      = drone_to_indices
     cluster_sampling["tile_coord_to_indices"] = tile_coord_to_indices
+    cluster_sampling["content_hash_to_indices"] = content_hash_to_indices
+    cluster_sampling["pair_to_content_hash"]    = pair_to_content_hash
     raw_gps = getattr(loader.dataset, "pair_gps", {})
     cluster_sampling["pair_to_gps"] = {i: raw_gps[i] for i in sample_indices.tolist()
                                         if i in raw_gps}
@@ -1181,7 +1228,10 @@ def compute_mes_exclude_set(query_idx, cluster_sampling, cluster_pool=None):
     Returns the set of pair indices that must NOT be used as hard negatives for
     `query_idx` because they are really (semi-)positives or share the same scene:
       • self
-      • same positive satellite tile
+      • same positive satellite tile (by path, or by content hash -- catches
+        tiles that are byte-identical under different paths, e.g. duplicate
+        satellite images across two building IDs in University-1652's
+        official release)
       • spatially adjacent / twin-pass tiles (Chebyshev ≤ 2, pair-ID normalized so
         even/odd twin passes share one grid bucket — catches the exact-position
         cross-sensor twin tile)
@@ -1198,12 +1248,17 @@ def compute_mes_exclude_set(query_idx, cluster_sampling, cluster_pool=None):
     pair_to_drone_map  = cluster_sampling.get("pair_to_drone", {})
     drone_to_pairs_map = cluster_sampling.get("drone_to_indices", {})
     pair_to_gps        = cluster_sampling.get("pair_to_gps", {})
+    pair_to_content_hash    = cluster_sampling.get("pair_to_content_hash", {})
+    content_hash_to_pairs   = cluster_sampling.get("content_hash_to_indices", {})
 
     qi = int(query_idx)
     exclude_set = {qi}
     my_tile = pair_to_tile.get(qi)
     if my_tile:
         exclude_set |= tile_to_pairs.get(my_tile, set())
+        my_hash = pair_to_content_hash.get(qi)
+        if my_hash:
+            exclude_set |= content_hash_to_pairs.get(my_hash, frozenset())
         if tile_coord_map:
             parts = Path(my_tile).stem.split("_")
             if len(parts) >= 4:
@@ -1299,16 +1354,41 @@ def _cluster_pool_arrays(cluster_sampling, cluster_id):
 
 
 def _multi_cluster_pool_arrays(cluster_sampling, cluster_ids):
-    """Concatenated pool arrays for several clusters (e.g. 3 nearest), cached."""
+    """Concatenated pool arrays for several clusters (e.g. 3 nearest of a query).
+
+    NOT cached by combination: cluster_ids is per-query (each query's own
+    nearest-K clusters), so with K clusters there are up to C(K,3) distinct
+    combinations. Caching those in the shared unbounded `_np_cache["pool"]`
+    dict (as before) leaked without bound over an epoch -- confirmed via a
+    remote RAM watcher: single-process RSS reached 33.5GB and the kernel
+    OOM-killed the run within ~19 batches on GTA-UAV's 123k-pair, K=16
+    setting. The underlying per-cluster arrays are still cheaply cached
+    (bounded to K entries, see _cluster_pool_arrays), so concatenating them
+    fresh here is just an index/tensor copy, not a similarity recompute.
+    """
+    parts = [_cluster_pool_arrays(cluster_sampling, c) for c in cluster_ids]
+    parts = [(i, m) for i, m in parts if i.size]
+    if parts:
+        idx = np.concatenate([p[0] for p in parts])
+        mat = torch.cat([p[1] for p in parts], dim=0)
+        return idx, mat
+    return np.empty(0, dtype=np.int64), torch.zeros(0, 1)
+
+
+def _all_pool_arrays(cluster_sampling):
+    """Full-bank pool arrays (every sample), cached. Used by the fallback when a
+    query's cluster pools cannot fill the negative quota after exclusion. Built
+    once per clustering pass — the previous per-query torch.stack over the whole
+    bank allocated ~0.5 GB per fallback query and OOM-killed large-dataset runs
+    (GTA-UAV, 123k pairs) on both Linux and Windows."""
     cache = _np_cache(cluster_sampling)
-    key = ("n",) + tuple(int(c) for c in cluster_ids)
+    key = ("all",)
     if key not in cache["pool"]:
-        parts = [_cluster_pool_arrays(cluster_sampling, c) for c in cluster_ids]
-        parts = [(i, m) for i, m in parts if i.size]
-        if parts:
-            idx = np.concatenate([p[0] for p in parts])
-            mat = torch.cat([p[1] for p in parts], dim=0)
-            cache["pool"][key] = (idx, mat)
+        emb = cluster_sampling["embedding_lookup"]
+        idx = [int(i) for i in cluster_sampling["all_indices"] if int(i) in emb]
+        if idx:
+            mat = torch.stack([emb[i] for i in idx], dim=0).float()
+            cache["pool"][key] = (np.asarray(idx, dtype=np.int64), mat)
         else:
             cache["pool"][key] = (np.empty(0, dtype=np.int64), torch.zeros(0, 1))
     return cache["pool"][key]
@@ -1404,13 +1484,13 @@ def sample_structured_negative_indices(
         temperatures.extend([GLOBAL_NEGATIVE_TAU] * len(global_selected))
 
         if len(selected) < negatives_per_query:
-            # First fallback: sample from all clusters (cross-cluster) with hard mining
+            # First fallback: sample from all clusters (cross-cluster) with hard
+            # mining, via the cached full-bank matrix — never re-stacked per query.
             remaining = negatives_per_query - len(selected)
-            embeddings = cluster_sampling.get("embedding_lookup", {})
-            if all_indices and embeddings and int(query_idx) in embeddings:
-                fallback_selected = sample_hard_from_pool(
-                    embeddings, all_indices, remaining, exclude=exclude_set, query_idx=int(query_idx)
-                )
+            a_idx, a_mat = _all_pool_arrays(cluster_sampling)
+            if a_idx.size:
+                fallback_selected = _sample_hard_cached(
+                    cluster_sampling, a_idx, a_mat, remaining, exclude_set, int(query_idx))
                 selected.extend(fallback_selected)
                 temperatures.extend([GLOBAL_NEGATIVE_TAU] * len(fallback_selected))
 

@@ -313,6 +313,62 @@ def _recall_and_ap(sim: np.ndarray, query_ids: list, gallery_ids: list,
     return recalls, float(np.mean(aps)) if aps else 0.0, n_q
 
 
+def _dedupe_content_gallery(paths, ids, log_fn):
+    """Merge gallery images that are byte-identical across DIFFERENT location
+    IDs -- a known University-1652 data-quality issue: a handful of official
+    train/test satellite images are duplicated across two different building
+    IDs (e.g. test IDs 0761/0768, 0239/0240), so no method can ever tell them
+    apart from image content alone. Keeps only the first-encountered image
+    per unique content hash and returns a redirect map {removed_id:
+    retained_id} so queries whose ground truth was the removed id are scored
+    against the surviving duplicate instead of being unresolvable by
+    construction. See README for details -- not applied in the paper's own
+    comparison tables, since that would break comparability with the
+    official/other-method numbers this repo reproduces."""
+    import hashlib
+    seen_hash_to_id = {}
+    redirect = {}
+    keep_paths, keep_ids = [], []
+    for p, gid in zip(paths, ids):
+        with open(p, "rb") as f:
+            h = hashlib.md5(f.read()).hexdigest()
+        if h in seen_hash_to_id:
+            redirect[gid] = seen_hash_to_id[h]
+            continue
+        seen_hash_to_id[h] = gid
+        keep_paths.append(p)
+        keep_ids.append(gid)
+    if redirect:
+        merged = sorted(set(redirect.keys()) | set(redirect.values()))
+        log_fn(f"Gallery dedup: {len(redirect)} duplicate-content image(s) "
+               f"merged into their surviving twin (IDs involved: {merged}).")
+    return keep_paths, keep_ids, redirect
+
+
+def _dedupe_content_queries(paths, ids, log_fn):
+    """Drop one of each pair of byte-identical QUERY images (relevant only
+    when the query modality is satellite, i.e. Satellite->Drone direction):
+    a query whose input pixels are identical to another query's, but whose
+    correct answer differs, is unresolvable by construction and would
+    otherwise silently cap R@1. See README for details."""
+    import hashlib
+    seen = set()
+    keep_paths, keep_ids, dropped = [], [], []
+    for p, qid in zip(paths, ids):
+        with open(p, "rb") as f:
+            h = hashlib.md5(f.read()).hexdigest()
+        if h in seen:
+            dropped.append(qid)
+            continue
+        seen.add(h)
+        keep_paths.append(p)
+        keep_ids.append(qid)
+    if dropped:
+        log_fn(f"Query dedup: {len(dropped)} duplicate-content query image(s) "
+               f"skipped (IDs: {sorted(dropped)}).")
+    return keep_paths, keep_ids
+
+
 def _recall_and_ap_with_gps(sim: np.ndarray, query_ids: list, gallery_ids: list,
                              query_gps: dict, gallery_gps: dict, ks=(1, 5, 10),
                              gps_threshold: float = 100.0):
@@ -3178,6 +3234,19 @@ class GeneralEvalApp(QWidget):
             raise FileNotFoundError(f"No query images in {query_dir}")
         self.log_message.emit(f"Queries: {len(query_paths)} images from "
                               f"{len(set(query_ids))} locations")
+
+        # De-duplicate byte-identical satellite images (see _dedupe_content_*
+        # docstrings): only the satellite-image side of each direction is
+        # checked, since that's where the known duplicate-content issue
+        # lives (drone renders are per-building distinct).
+        if direction == "d2s":
+            gallery_paths, gallery_ids, gal_redirect = _dedupe_content_gallery(
+                gallery_paths, gallery_ids, self.log_message.emit)
+            if gal_redirect:
+                query_ids = [gal_redirect.get(qid, qid) for qid in query_ids]
+        else:
+            query_paths, query_ids = _dedupe_content_queries(
+                query_paths, query_ids, self.log_message.emit)
 
         # Embed gallery (progress 5 → 40)
         gal_emb, _ = self._embed_cached(

@@ -55,7 +55,7 @@ Full method details, all losses, and every experimental protocol are in
 | MCCG¹ | ConvNeXt-T | ~28M | 90.26 | **97.90** | **91.82** |
 | CAMP | ConvNeXt-B | 91.4M | 88.72 | — | — |
 | CEUSP | ConvNeXt-T | ~28M | 89.45 | 96.05 | 91.01 |
-| DINOv2-GLFA+CESP | DINOv2-B | ~86M | 86.27 | 96.83 | 88.87 |
+| DINOv2-GLFA+CESP³ | DINOv2-B | ~86M | 86.27 | 96.83 | 88.87 |
 | **Ours** | Swin-B | ~88M | 86.62 | 96.83 | 89.50 |
 | **Ours + VQ re-rank** | Swin-B | ~88M | 88.55 | 96.61 | — |
 | **Ours** | ConvNeXt-T | ~28M | 86.14 | 96.91 | 89.12 |
@@ -72,6 +72,16 @@ table — MCCG's own paper does not evaluate DenseUAV, and CEUSP states no
 reproduction methodology (epochs, learning rate, or official-code use) for
 this or any other baseline it reports, nor R@5/SDM@1 for MCCG. Superseded
 by our own independently verified reproduction (¹) above.
+
+³ Trained/evaluated at 224×224 input (ours: 384×384); SGD lr=0.03 decayed
+at epochs 70/110, batch size 80, 120 epochs, single RTX 4090. The reported
+number is the full method (GLFA + CESP + GeM pooling, joint CE + soft-
+weighted-triplet + bilateral-KL loss) — their own ablation shows GLFA alone
+reaches only R@1=84.64%/SDM@1=88.07%, with CESP contributing the
+remaining ~1.6pp to the reported 86.27%/88.87%. They also report a
+DINOv2-B backbone comparison against 8 other backbones (all with the same
+GLFA+CESP head) and a head-to-head against CricaVPR's fine-tuning approach
+on the same task (CricaVPR: R@1=66.50%/SDM@1=70.91%, well behind).
 
 The ConvNeXt-T/B numbers above were revised upward from an earlier draft
 (82.41/91.89 and 84.56/91.29) after fixing a bug in the VQ re-rank
@@ -100,12 +110,35 @@ details.
 | Sample4Geo | ConvNeXt-B | 92.65 | 93.81 | 95.14 | 91.39 |
 | MEAN | ConvNeXt-T | 93.55 | 94.53 | 96.01 | 92.08 |
 | DAC | ConvNeXt-B | **94.67** | **95.50** | 96.43 | 93.79 |
-| **Ours** | Swin-B | 94.52 | 95.44 | **96.86** | **93.83** |
+| **Ours**¹ | Swin-B | 94.69 | 95.44 | **96.86** | **93.83** |
 | **Ours** | ConvNeXt-T | 82.08 | 84.69 | 92.44 | 80.38 |
 | **Ours** | ConvNeXt-B | 90.91 | 92.44 | 95.72 | 90.32 |
 
+¹ **PROVISIONAL**: R@1 from an in-progress cluster-count sweep (K=64,
+continuing from the previously-reported checkpoint with the new
+content-hash MES fix active — see Checkpoints section). A longer
+confirmation run is in progress; AP/S→D columns still show the prior
+(K=16) checkpoint's values and will be updated once it completes.
+
 Full tables (all compared methods, both SUES-200 gallery conventions,
 per-altitude breakdowns) are in the paper.
+
+**University-1652 duplicate-image handling.** The official University-1652
+release has a handful of satellite images duplicated (byte-identical) across
+two different building IDs — e.g. test IDs 0761/0768 and 0239/0240 share one
+file each, despite having distinct drone imagery. No method can tell these
+apart from image content alone, so `general_eval_gui.py`'s University-1652
+evaluator (`_dedupe_content_gallery` / `_dedupe_content_queries` in
+`general_eval_gui.py`) detects and handles this automatically: in D→S, the
+duplicate gallery image is merged into its surviving twin and affected
+queries are scored against that twin instead of being unresolvable by
+construction; in S→D, one of each duplicate-content query pair is dropped
+from evaluation, since it's guaranteed unresolvable either way. This affects
+~0.2-0.4% of test locations and is a tooling correctness fix, not a change
+to what's being measured — the numbers above are unaffected within
+rounding. This handling is specific to our own eval tool and is not applied
+when reproducing other methods' official numbers, so it isn't mentioned in
+the paper's comparison tables.
 
 ## Datasets & leaderboards
 
