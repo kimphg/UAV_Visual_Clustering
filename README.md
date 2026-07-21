@@ -217,7 +217,7 @@ Trained checkpoints are not committed to this repository (multi-GB
 binaries). The 9 final checkpoints that produced every reported number
 (3 backbones x DenseUAV/SUES-200/University-1652) are available here:
 
-**[Google Drive link — TODO: paste link after upload]**
+**[Download checkpoints (Google Drive)](https://drive.google.com/drive/folders/1MJjMTtpWYBR8V7dTb40Exr1q-efToXzD?usp=drive_link)**
 
 Filenames match the table in `checkpoints_release/MANIFEST.md` (mirrored
 below) — `{backbone}_{dataset}.pt`, e.g. `convnext_t_denseuav.pt`.
