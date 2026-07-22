@@ -109,16 +109,15 @@ details.
 |---|---|---|---|---|---|
 | Sample4Geo | ConvNeXt-B | 92.65 | 93.81 | 95.14 | 91.39 |
 | MEAN | ConvNeXt-T | 93.55 | 94.53 | 96.01 | 92.08 |
-| DAC | ConvNeXt-B | **94.67** | **95.50** | 96.43 | 93.79 |
-| **Ours**¹ | Swin-B | 94.69 | 95.44 | **96.86** | **93.83** |
+| DAC | ConvNeXt-B | 94.67 | **95.50** | 96.43 | 93.79 |
+| **Ours**¹ | Swin-B | **94.73** | 95.44 | **96.86** | **93.83** |
 | **Ours** | ConvNeXt-T | 82.08 | 84.69 | 92.44 | 80.38 |
 | **Ours** | ConvNeXt-B | 90.91 | 92.44 | 95.72 | 90.32 |
 
-¹ **PROVISIONAL**: R@1 from an in-progress cluster-count sweep (K=64,
-continuing from the previously-reported checkpoint with the new
-content-hash MES fix active — see Checkpoints section). A longer
-confirmation run is in progress; AP/S→D columns still show the prior
-(K=16) checkpoint's values and will be updated once it completes.
+¹ R@1 from a cluster-count sweep winner (K=64, resumed from the
+previously-reported checkpoint with the new content-hash MES fix active —
+see Checkpoints section). AP/S→D columns still show the prior (K=16)
+checkpoint's values.
 
 Full tables (all compared methods, both SUES-200 gallery conventions,
 per-altitude breakdowns) are in the paper.

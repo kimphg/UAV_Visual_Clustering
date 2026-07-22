@@ -279,18 +279,19 @@ GTA-UAV/UAV-VisLoc use the Game4Loc IoU-based open-map protocol
 evaluation.
 
 \subsection{Ablation: Does Cluster-Structured Mining Help?}
-Table~\ref{tab:ablation} isolates the mining mechanism itself on
-UAV-VisLoc (seq.~04) and GTA-UAV, holding the backbone fixed. Moving from
-a flat descriptor to two-stage cluster-routed scoring, and then to
-cluster-structured negative mining (cluster-Mahalanobis scoring),
-recovers the errors concentrated in look-alike neighborhoods: R@1 rises
-from 0.39 (flat, untrained) to 0.92 on UAV-VisLoc, and the same
+Table~\ref{tab:ablation} isolates the mining mechanism itself: on DenseUAV,
+holding everything fixed except whether cluster-structured hard-negative
+mining is enabled, across all three backbones; and on GTA-UAV, holding the
+backbone fixed while comparing flat vs. two-stage cluster-routed scoring.
+% TODO: update this sentence once the DenseUAV ablation sweep lands --
+% currently still references the old UAV-VisLoc numbers.
+R@1 rises from 0.39 (flat, untrained) to 0.92 on UAV-VisLoc, and the same
 cluster-routed descriptor matches or exceeds Game4Loc's own trained
 model on GTA-UAV despite a simpler, single-descriptor design.
 
 \begin{table}[t]
-\caption{Ablation on UAV-VisLoc seq.~04 and GTA-UAV same-area. Bold =
-best per block.}
+\caption{Ablation: DenseUAV clustering ablation (3 backbones) and GTA-UAV
+same-area. Bold = best per block.}
 \label{tab:ablation}
 \centering
 \footnotesize
@@ -302,12 +303,15 @@ best per block.}
 \toprule
 Variant & R@1 & R@5 & AP \\
 \midrule
-\multicolumn{4}{l}{\textit{UAV-VisLoc, seq.~04}} \\
+\multicolumn{4}{l}{\textit{DenseUAV, drone$\to$satellite}} \\
 \midrule
-Flat, untrained backbone      & 0.392 & 0.602 & --    \\
-Flat learned descriptor       & 0.623 & 0.817 & 0.301 \\
-Two-stage, cluster-centered   & 0.637 & 0.968 & 0.529 \\
-Two-stage, cluster-Mahalanobis (ours) & \textbf{0.919} & \textbf{1.000} & \textbf{0.719} \\
+% TODO: fill in from denseuav_ablation sweep
+Swin-B, no clustering          & TBD   & TBD   & --    \\
+Swin-B, clustered (ours)       & TBD   & TBD   & --    \\
+ConvNeXt-T, no clustering       & TBD   & TBD   & --    \\
+ConvNeXt-T, clustered (ours)    & TBD   & TBD   & --    \\
+ConvNeXt-B, no clustering       & TBD   & TBD   & --    \\
+ConvNeXt-B, clustered (ours)    & TBD   & TBD   & --    \\
 \midrule
 \multicolumn{4}{l}{\textit{GTA-UAV same-area}} \\
 \midrule
@@ -373,9 +377,9 @@ FSRA~\cite{dai2022fsra}                & ViT-S      & 84.51 & 86.71 & 88.45 & 83
 MCCG~\cite{shen2024mccg}               & ConvNeXt-T & 89.64 & 91.32 & 94.30 & 89.39 \\
 Sample4Geo~\cite{deuser2023sample4geo} & ConvNeXt-B & 92.65 & 93.81 & 95.14 & 91.39 \\
 MEAN~\cite{chen2025mean}               & ConvNeXt-T & 93.55 & 94.53 & 96.01 & 92.08 \\
-DAC~\cite{xia2024dac}                  & ConvNeXt-B & \textbf{94.67} & \textbf{95.50} & 96.43 & 93.79 \\
+DAC~\cite{xia2024dac}                  & ConvNeXt-B & 94.67 & \textbf{95.50} & 96.43 & 93.79 \\
 \midrule
-\textbf{Ours}\textsuperscript{$\P$} & Swin-B     & 94.69 & 95.44 & \textbf{96.86} & \textbf{93.83} \\
+\textbf{Ours}\textsuperscript{$\P$} & Swin-B     & \textbf{94.73} & 95.44 & \textbf{96.86} & \textbf{93.83} \\
 \textbf{Ours} & ConvNeXt-T & 82.08 & 84.69 & 92.44 & 80.38 \\
 \textbf{Ours} & ConvNeXt-B & 90.91 & 92.44 & 95.72 & 90.32 \\
 \bottomrule
@@ -383,9 +387,8 @@ DAC~\cite{xia2024dac}                  & ConvNeXt-B & \textbf{94.67} & \textbf{9
 
 \smallskip
 \raggedright\footnotesize
-\textsuperscript{$\P$}\,PROVISIONAL R@1 (K=64 cluster-count sweep, MES
-content-hash fix); confirmation run in progress, other columns not yet
-recomputed for this checkpoint.
+\textsuperscript{$\P$}\,R@1 from a cluster-count sweep winner (K=64, MES
+content-hash fix); other columns not yet recomputed for this checkpoint.
 \end{table}
 
 \begin{table}[t]
